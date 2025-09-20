@@ -1,0 +1,149 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 98%;
+    --foreground: 220 15% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 15% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 15% 15%;
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 94%;
+    --secondary-foreground: 220 15% 25%;
+    --muted: 210 40% 94%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 262 83% 96%;
+    --accent-foreground: 262 83% 25%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 262 83% 58%;
+    --radius: 0.75rem;
+    
+    /* Enhanced color palette */
+    --emerald: 160 84% 39%;
+    --emerald-foreground: 0 0% 100%;
+    --amber: 43 96% 56%;
+    --amber-foreground: 26 83% 14%;
+    --rose: 351 83% 61%;
+    --rose-foreground: 0 0% 100%;
+    --indigo: 239 84% 67%;
+    --indigo-foreground: 0 0% 100%;
+    --teal: 173 80% 40%;
+    --teal-foreground: 0 0% 100%;
+  }
+
+  .dark {
+    --background: 224 71% 4%;
+    --foreground: 213 31% 91%;
+    --card: 224 71% 4%;
+    --card-foreground: 213 31% 91%;
+    --popover: 224 71% 4%;
+    --popover-foreground: 213 31% 91%;
+    --primary: 263 70% 50%;
+    --primary-foreground: 210 20% 98%;
+    --secondary: 215 28% 17%;
+    --secondary-foreground: 210 20% 98%;
+    --muted: 215 28% 17%;
+    --muted-foreground: 217 11% 65%;
+    --accent: 215 28% 17%;
+    --accent-foreground: 210 20% 98%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 215 28% 17%;
+    --input: 215 28% 17%;
+    --ring: 263 70% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+.hero-gradient {
+  background: linear-gradient(135deg, 
+    hsl(262 83% 58%) 0%, 
+    hsl(239 84% 67%) 25%, 
+    hsl(173 80% 40%) 50%, 
+    hsl(160 84% 39%) 75%, 
+    hsl(43 96% 56%) 100%);
+  position: relative;
+}
+
+.hero-gradient::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, 
+    rgba(139, 92, 246, 0.1) 0%, 
+    rgba(99, 102, 241, 0.1) 25%, 
+    rgba(20, 184, 166, 0.1) 50%, 
+    rgba(16, 185, 129, 0.1) 75%, 
+    rgba(245, 158, 11, 0.1) 100%);
+  backdrop-filter: blur(1px);
+}
+
+.medical-pattern {
+  background-image: 
+    radial-gradient(circle at 1px 1px, rgba(255,255,255,0.2) 1px, transparent 0),
+    radial-gradient(circle at 10px 10px, rgba(255,255,255,0.1) 1px, transparent 0);
+  background-size: 20px 20px, 40px 40px;
+}
+
+/* Enhanced utility classes */
+.text-gradient {
+  background: linear-gradient(135deg, hsl(262 83% 58%), hsl(239 84% 67%), hsl(173 80% 40%));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.card-gradient {
+  background: linear-gradient(135deg, 
+    rgba(255, 255, 255, 0.95) 0%, 
+    rgba(255, 255, 255, 0.9) 100%);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.glass-effect {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.shadow-vibrant {
+  box-shadow: 0 10px 25px -3px rgba(139, 92, 246, 0.1), 
+              0 4px 6px -2px rgba(139, 92, 246, 0.05);
+}
+
+.shadow-vibrant-lg {
+  box-shadow: 0 25px 50px -12px rgba(139, 92, 246, 0.15), 
+              0 10px 20px -5px rgba(139, 92, 246, 0.1);
+}
+
+/* Status colors */
+.status-online {
+  background: linear-gradient(135deg, hsl(160 84% 39%), hsl(160 84% 45%));
+  color: hsl(0 0% 100%);
+}
+
+.status-offline {
+  background: linear-gradient(135deg, hsl(0 84% 60%), hsl(0 84% 65%));
+  color: hsl(0 0% 100%);
+}
+
+.status-unreachable {
+  background: linear-gradient(135deg, hsl(43 96% 56%), hsl(43 96% 61%));
+  color: hsl(26 83% 14%);
+}
