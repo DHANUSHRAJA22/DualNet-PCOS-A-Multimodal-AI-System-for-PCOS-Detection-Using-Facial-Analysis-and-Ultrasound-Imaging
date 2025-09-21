@@ -32,7 +32,8 @@ from schemas import (
     StructuredPredictionResponse, 
     LegacyPredictionResponse, 
     EnhancedHealthResponse,
-    ErrorResponse
+    ErrorResponse,
+    StandardResponse
 )
 
 # Configure logging
@@ -125,6 +126,23 @@ def validate_uploaded_file(file: UploadFile) -> None:
             status_code=400,
             detail=f"Invalid file type '{file.content_type}'. Allowed types: {', '.join(settings.ALLOWED_MIME_TYPES)}"
         )
+
+def ensure_json_serializable(obj: Any) -> Any:
+    """Convert NumPy types to JSON-serializable Python types"""
+    import numpy as np
+    
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer, np.int32, np.int64)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: ensure_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [ensure_json_serializable(item) for item in obj]
+    else:
+        return obj
 
 @app.get("/health", response_model=EnhancedHealthResponse)
 async def enhanced_health_check():
@@ -261,7 +279,7 @@ async def structured_predict(
                     label=face_result.get("face_pred", "Analysis failed"),
                     scores=face_result.get("face_scores", []),
                     risk=face_risk,
-                    original_img=face_result.get("face_img")
+                    original_img=face_result.get("face_img"),
                     gender=face_result.get("gender"),
                     per_model=face_result.get("per_model"),
                     ensemble=face_result.get("ensemble")
@@ -310,7 +328,7 @@ async def structured_predict(
                     risk=xray_risk,
                     original_img=xray_result.get("xray_img"),
                     visualization=xray_result.get("yolo_vis"),
-                    found_labels=xray_result.get("found_labels", [])
+                    found_labels=xray_result.get("found_labels", []),
                     detections=xray_result.get("detections"),
                     per_roi=xray_result.get("per_roi"),
                     per_model=xray_result.get("per_model"),
@@ -353,14 +371,17 @@ async def structured_predict(
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         logger.info(f"Structured prediction completed in {processing_time:.2f}ms")
         
-        return StructuredPredictionResponse(
-            ok=True,
-            modalities=modalities,
-            final=final,
-            warnings=warnings,
-            processing_time_ms=processing_time,
-            debug=debug_info
-        )
+        # Ensure JSON serializable
+        response_data = {
+            "ok": True,
+            "modalities": [ensure_json_serializable(m.dict()) for m in modalities],
+            "final": ensure_json_serializable(final.dict()),
+            "warnings": warnings,
+            "processing_time_ms": processing_time,
+            "debug": ensure_json_serializable(debug_info)
+        }
+        
+        return StructuredPredictionResponse(**response_data)
         
     except HTTPException:
         raise
@@ -390,25 +411,25 @@ async def legacy_predict(
         legacy_response = LegacyPredictionResponse(ok=True)
         
         # Extract face data
-        face_modality = next((m for m in structured_response.modalities if m.type == "face"), None)
+        face_modality = next((m for m in structured_response.modalities if m["type"] == "face"), None)
         if face_modality:
-            legacy_response.face_pred = face_modality.label
-            legacy_response.face_scores = face_modality.scores
-            legacy_response.face_img = face_modality.original_img
-            legacy_response.face_risk = face_modality.risk
+            legacy_response.face_pred = face_modality["label"]
+            legacy_response.face_scores = face_modality["scores"]
+            legacy_response.face_img = face_modality.get("original_img")
+            legacy_response.face_risk = face_modality["risk"]
         
         # Extract X-ray data
-        xray_modality = next((m for m in structured_response.modalities if m.type == "xray"), None)
+        xray_modality = next((m for m in structured_response.modalities if m["type"] == "xray"), None)
         if xray_modality:
-            legacy_response.xray_pred = xray_modality.label
-            legacy_response.xray_img = xray_modality.original_img
-            legacy_response.yolo_vis = xray_modality.visualization
-            legacy_response.found_labels = xray_modality.found_labels
-            legacy_response.xray_risk = xray_modality.risk
+            legacy_response.xray_pred = xray_modality["label"]
+            legacy_response.xray_img = xray_modality.get("original_img")
+            legacy_response.yolo_vis = xray_modality.get("visualization")
+            legacy_response.found_labels = xray_modality.get("found_labels")
+            legacy_response.xray_risk = xray_modality["risk"]
         
         # Final results
-        legacy_response.combined = structured_response.final.explanation
-        legacy_response.overall_risk = structured_response.final.overall_risk
+        legacy_response.combined = structured_response.final["explanation"]
+        legacy_response.overall_risk = structured_response.final["overall_risk"]
         
         return legacy_response
         
@@ -417,6 +438,37 @@ async def legacy_predict(
         return LegacyPredictionResponse(
             ok=False,
             message=f"Prediction failed: {str(e)}"
+        )
+
+@app.post("/predict-file", response_model=StandardResponse)
+async def predict_file(
+    file: UploadFile = File(...),
+    type: str = Query("face", description="Analysis type: 'face' or 'xray'")
+):
+    """
+    Legacy single file upload endpoint
+    
+    Accepts a single file and routes to appropriate analysis pipeline
+    """
+    try:
+        if type == "face":
+            result = await structured_predict(face_img=file, xray_img=None)
+        elif type == "xray":
+            result = await structured_predict(face_img=None, xray_img=file)
+        else:
+            raise HTTPException(status_code=400, detail="Type must be 'face' or 'xray'")
+        
+        return StandardResponse(
+            ok=True,
+            message="Analysis completed successfully",
+            data=ensure_json_serializable(result.dict())
+        )
+        
+    except Exception as e:
+        logger.error(f"File prediction failed: {str(e)}")
+        return StandardResponse(
+            ok=False,
+            message=f"Analysis failed: {str(e)}"
         )
 
 @app.get("/img-proxy")

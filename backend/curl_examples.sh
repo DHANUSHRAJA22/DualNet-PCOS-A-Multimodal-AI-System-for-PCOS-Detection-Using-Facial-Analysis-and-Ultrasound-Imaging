@@ -85,31 +85,41 @@ else
     echo "⚠️  No X-ray test image found at $TEST_DIR/xray_sample.jpg"
 fi
 
-# Test 6: Error handling - no images
+# Test 6: Single file endpoint
 echo ""
-echo "❌ Test 6: Error handling (no images)..."
+echo "📁 Test 6: Single file endpoint (face)..."
+if [ -f "$TEST_DIR/female_face.jpg" ]; then
+    curl -s -X POST "$BASE_URL/predict-file?type=face" \
+        -F "file=@$TEST_DIR/female_face.jpg" | jq '.ok, .message'
+else
+    echo "⚠️  No test image for single file endpoint"
+fi
+
+# Test 7: Error handling - no images
+echo ""
+echo "❌ Test 7: Error handling (no images)..."
 echo "Should return 400 error:"
 curl -s -X POST "$BASE_URL/predict" | jq '.'
 
-# Test 7: Error handling - invalid file type
+# Test 8: Error handling - invalid file type
 echo ""
-echo "❌ Test 7: Error handling (invalid file type)..."
+echo "❌ Test 8: Error handling (invalid file type)..."
 echo "This is not an image" > /tmp/test_invalid.txt
 echo "Should return 400 error for invalid file type:"
 curl -s -X POST "$BASE_URL/predict" \
     -F "face_img=@/tmp/test_invalid.txt" | jq '.'
 rm -f /tmp/test_invalid.txt
 
-# Test 8: Image proxy
+# Test 9: Image proxy
 echo ""
-echo "🖼️  Test 8: Image proxy..."
+echo "🖼️  Test 9: Image proxy..."
 echo "Testing CORS proxy with Pexels image:"
 curl -s "$BASE_URL/img-proxy?url=https://images.pexels.com/photos/1239291/pexels-photo-1239291.jpeg" \
     -o /dev/null -w "Status: %{http_code}, Size: %{size_download} bytes, Time: %{time_total}s\n"
 
-# Test 9: Debug information
+# Test 10: Debug information
 echo ""
-echo "🐛 Test 9: Debug information in structured response..."
+echo "🐛 Test 10: Debug information in structured response..."
 if [ -f "$TEST_DIR/female_face.jpg" ]; then
     echo "Debug info from structured response:"
     curl -s -X POST "$BASE_URL/predict" \
@@ -118,9 +128,9 @@ else
     echo "⚠️  No test image for debug info test"
 fi
 
-# Test 10: Performance timing
+# Test 11: Performance timing
 echo ""
-echo "⏱️  Test 10: Performance timing..."
+echo "⏱️  Test 11: Performance timing..."
 if [ -f "$TEST_DIR/female_face.jpg" ] && [ -f "$TEST_DIR/xray_sample.jpg" ]; then
     echo "Processing time comparison:"
     echo "Face only:"
@@ -137,6 +147,17 @@ else
     echo "⚠️  Need both test images for performance comparison"
 fi
 
+# Test 12: Per-model and ensemble details
+echo ""
+echo "🤖 Test 12: Per-model and ensemble details..."
+if [ -f "$TEST_DIR/female_face.jpg" ]; then
+    echo "Face per-model breakdown:"
+    curl -s -X POST "$BASE_URL/predict" \
+        -F "face_img=@$TEST_DIR/female_face.jpg" | jq '.modalities[0].per_model, .modalities[0].ensemble'
+else
+    echo "⚠️  No test image for per-model analysis"
+fi
+
 echo ""
 echo "✅ cURL examples completed!"
 echo ""
@@ -149,3 +170,4 @@ echo "   - Check server logs for detailed processing information"
 echo "   - Visit http://127.0.0.1:5000/docs for interactive API documentation"
 echo "   - The structured response includes per-model scores and ROI details"
 echo "   - Legacy endpoint maintains backward compatibility"
+echo "   - All responses are JSON serializable with proper NumPy type conversion"

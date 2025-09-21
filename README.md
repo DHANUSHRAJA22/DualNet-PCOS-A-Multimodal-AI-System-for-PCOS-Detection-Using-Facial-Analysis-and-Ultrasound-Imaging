@@ -15,7 +15,7 @@ A comprehensive, production-ready full-stack application for PCOS screening anal
 - **Rich Results Display**: Per-model scores, ROI analysis, and ensemble details
 - **Debug Information**: Development insights and processing metadata
 
-### Backend (FastAPI + TensorFlow + YOLO)
+### Backend (FastAPI + TensorFlow + YOLO) - Production Ready
 - **Multi-modal Analysis**: Facial recognition + X-ray morphological analysis
 - **Gender Gating**: Male faces skip PCOS analysis with clear messaging
 - **Ensemble Models**: Multiple TensorFlow models with weighted averaging
@@ -26,6 +26,12 @@ A comprehensive, production-ready full-stack application for PCOS screening anal
 - **Production Ready**: Comprehensive error handling, logging, and validation
 - **CORS Support**: Configured for frontend integration
 - **Static File Serving**: Automatic image serving and cleanup
+- **File Validation**: Size limits (5MB), MIME type checking, and security validation
+- **JSON Serialization**: Proper NumPy type conversion for API responses
+- **Dynamic Label Loading**: Class labels loaded from .labels.txt files
+- **Risk Thresholds**: Configurable probability bands (<0.33/0.33-0.66/>0.66)
+- **Fallback Classification**: Full image analysis when no ROIs detected
+- **Legacy Compatibility**: /predict-legacy endpoint for existing clients
 
 ## 🏃‍♂️ Quick Start
 
@@ -76,16 +82,29 @@ backend/models/
 ├── face/
 │   ├── gender_classifier.h5      # Gender detection model
 │   ├── face_model_A.h5           # Face PCOS model 1 (VGG16)
-│   └── face_model_B.h5           # Face PCOS model 2 (ResNet50)
+│   ├── face_model_B.h5           # Face PCOS model 2 (ResNet50)
+│   └── pcos_detector_158.labels.txt  # Face class labels
 ├── xray/
 │   ├── xray_model_A.h5           # X-ray PCOS model 1
-│   └── xray_model_B.h5           # X-ray PCOS model 2
+│   ├── xray_model_B.h5           # X-ray PCOS model 2
+│   └── xray_classifier.labels.txt    # X-ray class labels
 └── yolo/
     └── bestv8.pt                 # YOLO detection model
 ```
 
 **Important**: Use these exact filenames. The backend is configured to load models from these specific paths.
 
+### Label Files Format
+
+Create `.labels.txt` files with class names:
+```
+# Option 1: JSON format
+["non_pcos", "pcos"]
+
+# Option 2: Plain text (one per line)
+non_pcos
+pcos
+```
 ## 🔧 Configuration
 
 ### Backend Configuration
@@ -112,6 +131,7 @@ export PORT=5000
 export DEBUG=true
 export MAX_UPLOAD_MB=5
 export STATIC_TTL_SECONDS=3600
+export ALLOWED_ORIGINS="http://localhost:5173,http://localhost:8080"
 
 # Frontend
 export VITE_API_BASE=http://localhost:5000
@@ -120,7 +140,7 @@ export VITE_API_BASE=http://localhost:5000
 ## 📡 API Endpoints
 
 ### GET /health
-Returns enhanced model availability status with lazy-loading capability
+Returns enhanced model availability status with lazy-loading capability and detailed model information
 
 ```json
 {
@@ -202,6 +222,12 @@ Enhanced prediction endpoint with structured response:
 ### POST /predict-legacy
 Backward compatibility endpoint returning flat structure for existing frontends
 
+### POST /predict-file
+Single file upload endpoint with type parameter:
+- `file`: Image file to analyze
+- `type`: Analysis type ('face' or 'xray')
+
+Returns standard response format with structured data.
 ### GET /img-proxy?url=...
 Safe CORS proxy for external images
 
@@ -226,9 +252,9 @@ Safe CORS proxy for external images
 6. **Metadata Collection**: Store detections, ROI details, and ensemble info
 
 ### Risk Classification
-- **Low Risk**: < 33% probability
-- **Moderate Risk**: 33-66% probability  
-- **High Risk**: ≥ 66% probability
+- **Low Risk**: < 0.33 probability (configurable)
+- **Moderate Risk**: 0.33-0.66 probability (configurable)
+- **High Risk**: ≥ 0.66 probability (configurable)
 
 ## 🧪 Testing
 
@@ -236,7 +262,10 @@ Safe CORS proxy for external images
 
 ```bash
 # Run comprehensive test suite
-cd backend && python test_endpoints.py
+cd backend && python test_api.py
+
+# Run with pytest
+cd backend && pytest test_api.py -v
 
 # Run cURL examples
 cd backend && ./curl_examples.sh
@@ -256,6 +285,9 @@ curl -X POST "http://127.0.0.1:5000/predict" \
 curl -X POST "http://127.0.0.1:5000/predict" \
   -F "face_img=@test_face.jpg"
 
+# Test single file endpoint
+curl -X POST "http://127.0.0.1:5000/predict-file?type=face" \
+  -F "file=@test_face.jpg"
 # Test with X-ray only
 curl -X POST "http://127.0.0.1:5000/predict" \
   -F "xray_img=@test_xray.jpg"
@@ -296,6 +328,30 @@ npm run build
 # Serve dist/ with your preferred web server
 ```
 
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  pcos-api:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=5000
+      - DEBUG=false
+      - MAX_UPLOAD_MB=5
+    volumes:
+      - ./backend/models:/app/models:ro
+      - ./backend/static:/app/static
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
 ### Environment Setup
 
 ```bash
@@ -304,6 +360,7 @@ export DEBUG=false
 export HOST=0.0.0.0
 export PORT=5000
 export ALLOWED_ORIGINS="https://your-frontend.com"
+export MAX_UPLOAD_MB=5
 
 # Production frontend
 export VITE_API_BASE=https://your-backend.com
@@ -318,6 +375,8 @@ npm run build
 - **Image Proxy**: Whitelisted hosts only
 - **No Permanent Storage**: Images cleaned up automatically
 - **Medical Disclaimer**: Prominently displayed
+- **Input Sanitization**: All user inputs validated and sanitized
+- **Error Handling**: Secure error messages without sensitive information
 
 ## 📊 Monitoring
 
@@ -351,9 +410,10 @@ npm run build
    - Review backend logs for loading errors
     - Test lazy loading capability via health endpoint
 
-3. **CORS Errors**
-   - Ensure frontend origin is in `ALLOWED_ORIGINS`
-   - Check that backend returns proper headers
+3. **File Upload Errors**
+   - Check file size (5MB limit by default)
+   - Verify supported formats (JPEG/PNG/WebP)
+   - Ensure proper MIME type
    - Verify no 500 errors masquerading as CORS issues
 
 4. **File Upload Failures**
@@ -365,13 +425,11 @@ npm run build
 
 Educational and research use only. Not for medical diagnosis or treatment.
 
-    - Check ROI detection in debug output
-- Debug information in API responses
 
-6. **Per-Model Results Missing**
-   - Verify all model files are present
-   - Check model loading in health endpoint
-   - Review ensemble configuration
+
+7. **Label Loading Issues**
+   - Ensure .labels.txt files exist in model directories
+   - Review backend logs for label loading errors
 ## 👨‍💻 Author
 
 **DHANUSH RAJA (21MIC0158)**
@@ -383,8 +441,17 @@ Educational and research use only. Not for medical diagnosis or treatment.
 This full-stack application is production-ready. Simply:
 
 1. **Add your trained models** to the specified paths
-2. **Start the backend** with `uvicorn app:app --port 5000`
-3. **Start the frontend** with `npm run dev`
-4. **Access the application** at http://localhost:5173
+2. **Create label files** for your model classes
+3. **Start the backend** with `uvicorn app:app --port 5000`
+4. **Start the frontend** with `npm run dev`
+5. **Access the application** at http://localhost:5173
 
-The application will automatically handle model loading, ensemble predictions, per-model analysis, ROI processing, file management, and provide a complete PCOS screening interface with rich debugging capabilities!
+The application will automatically handle:
+- Dynamic model and label loading
+- Ensemble predictions with per-model breakdowns
+- ROI processing with bounding box analysis
+- File validation and security checks
+- Comprehensive error handling and logging
+- Rich debugging capabilities and performance monitoring
+
+Perfect for production deployment with Docker, comprehensive testing, and full API documentation!

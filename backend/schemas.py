@@ -9,6 +9,12 @@ from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 
+class StandardResponse(BaseModel):
+    """Standard API response format"""
+    ok: bool = Field(..., description="Success status")
+    message: Optional[str] = Field(None, description="Human-readable message")
+    data: Optional[Dict[str, Any]] = Field(None, description="Response data")
+
 class ModelStatus(BaseModel):
     """Status information for a single model"""
     status: str = Field(..., description="Model status: 'loaded', 'not_loaded', 'error'")

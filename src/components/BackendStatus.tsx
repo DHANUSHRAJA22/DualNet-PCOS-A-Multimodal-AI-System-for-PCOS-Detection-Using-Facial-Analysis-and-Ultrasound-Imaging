@@ -48,6 +48,10 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
   useEffect(() => {
     checkHealth()
     setApiUrl(resolveApiBase())
+    
+    // Check health periodically
+    const interval = setInterval(checkHealth, 30000) // Every 30 seconds
+    return () => clearInterval(interval)
   }, [])
 
   const handleSetApiUrl = () => {

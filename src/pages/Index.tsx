@@ -119,11 +119,11 @@ export function IndexPage() {
       const formData = new FormData()
       
       if (faceImage) {
-        formData.append('face_img', faceImage.file)
+        formData.append('face_img', faceImage.file, faceImage.file.name)
       }
       
       if (xrayImage) {
-        formData.append('xray_img', xrayImage.file)
+        formData.append('xray_img', xrayImage.file, xrayImage.file.name)
       }
 
       const results = await postPredict(formData, true) // Use structured format
@@ -133,7 +133,7 @@ export function IndexPage() {
         ? convertToLegacyFormat(results)
         : results
       
-      navigate('/results', { state: { results } })
+      navigate('/results', { state: { results: results } })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Analysis failed'
       

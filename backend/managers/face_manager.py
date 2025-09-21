@@ -8,6 +8,7 @@ classification and PCOS ensemble prediction with proper error handling.
 import os
 import uuid
 import logging
+import json
 from typing import Dict, Optional, Any, Tuple
 from pathlib import Path
 import numpy as np
@@ -39,6 +40,7 @@ class FaceManager:
         self.pcos_models = {}
         self.can_predict_gender = False
         self.ensemble_manager = EnsembleManager()
+        self.class_labels = ["non_pcos", "pcos"]  # Default labels
         
         # Model status tracking
         self.model_status = {
@@ -47,6 +49,30 @@ class FaceManager:
         }
         
         self._load_models()
+        self._load_class_labels()
+    
+    def _load_class_labels(self) -> None:
+        """Load class labels from .labels.txt file"""
+        labels_file = FACE_MODELS_DIR / "pcos_detector_158.labels.txt"
+        
+        try:
+            if labels_file.exists():
+                with open(labels_file, 'r') as f:
+                    content = f.read().strip()
+                    if content.startswith('[') and content.endswith(']'):
+                        # JSON format
+                        self.class_labels = json.loads(content)
+                    else:
+                        # Plain text format, one label per line
+                        self.class_labels = [line.strip() for line in content.split('\n') if line.strip()]
+                
+                logger.info(f"Loaded class labels: {self.class_labels}")
+            else:
+                logger.warning(f"Labels file not found: {labels_file}, using defaults")
+                
+        except Exception as e:
+            logger.error(f"Failed to load class labels: {str(e)}")
+            logger.info("Using default labels: ['non_pcos', 'pcos']")
     
     def can_lazy_load_gender(self) -> bool:
         """Check if gender model can be lazy loaded"""

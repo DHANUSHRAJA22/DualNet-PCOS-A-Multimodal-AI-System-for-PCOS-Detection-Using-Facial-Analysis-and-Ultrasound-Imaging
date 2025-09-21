@@ -234,9 +234,9 @@ export function ResultsPage() {
   } else {
     // Legacy format
     overallRisk = (results.overall_risk as RiskLevel) || getRiskLevel(results.combined)
-    overallConfidence = results.face_scores && results.face_scores.length > 0 
-      ? Math.max(...results.face_scores) 
-      : 0.75
+    overallConfidence = results.face_scores && results.face_scores.length > 1 
+      ? results.face_scores[1] // PCOS probability
+      : 0.5
     explanation = results.combined || 'Analysis completed'
     
     // Convert legacy to modality format for display
