@@ -124,31 +124,51 @@ class EnsembleManager:
                 "overall_risk": "unknown",
                 "combined": "No valid predictions available for risk assessment",
                 "modalities_used": [],
-                "final_score": 0.0
+                "final_score": 0.0,
+                "fusion_method": "none"
             }
         
-        # Simple average of available modality scores
-        final_score = sum(available_scores) / len(available_scores)
-        risk_level = self._classify_risk(final_score)
+        # Enhanced fusion logic with thresholds
+        high_risk_count = sum(1 for score in available_scores if score >= 0.66)
+        moderate_risk_count = sum(1 for score in available_scores if 0.33 <= score < 0.66)
         
-        # Generate explanation
-        if len(modalities_used) == 2:
-            if risk_level == "high":
-                explanation = "High risk: Both modalities indicate PCOS symptoms."
-            elif risk_level == "moderate":
+        # Discrete fusion rules
+        if len(available_scores) == 2:  # Both modalities
+            if high_risk_count == 2:
+                risk_level = "high"
+                explanation = "High risk: Both facial and X-ray analysis indicate PCOS symptoms."
+            elif high_risk_count == 1:
+                risk_level = "moderate"
+                explanation = "Moderate risk: One modality shows high risk indicators."
+            elif moderate_risk_count >= 1:
+                risk_level = "moderate"
                 explanation = "Moderate risk: Mixed indicators across modalities."
             else:
+                risk_level = "low"
                 explanation = "Low risk: Both modalities show minimal PCOS indicators."
-        elif "face" in modalities_used:
-            explanation = f"{risk_level.title()} risk based on facial analysis."
-        else:
-            explanation = f"{risk_level.title()} risk based on X-ray analysis."
+        else:  # Single modality
+            single_score = available_scores[0]
+            if single_score >= 0.66:
+                risk_level = "high"
+            elif single_score >= 0.33:
+                risk_level = "moderate"
+            else:
+                risk_level = "low"
+            
+            modality_name = "facial analysis" if "face" in modalities_used else "X-ray analysis"
+            explanation = f"{risk_level.title()} risk based on {modality_name}."
+        
+        # Calculate final score as weighted average
+        final_score = sum(available_scores) / len(available_scores)
         
         return {
             "overall_risk": risk_level,
             "combined": explanation,
             "modalities_used": modalities_used,
-            "final_score": float(final_score)
+            "final_score": float(final_score),
+            "fusion_method": "discrete_rules",
+            "high_risk_count": high_risk_count,
+            "thresholds_used": {"low": 0.33, "high": 0.66}
         }
     
     def _classify_risk(self, score: float) -> str:

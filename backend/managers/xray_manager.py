@@ -49,7 +49,7 @@ class XrayManager:
         self.pcos_models = {}
         self.can_detect_objects = False
         self.ensemble_manager = EnsembleManager()
-        self.class_labels = ["normal", "pcos"]  # Default labels
+        self.class_labels = self._load_class_labels()
         
         # Model status tracking
         self.model_status = {
@@ -58,9 +58,8 @@ class XrayManager:
         }
         
         self._load_models()
-        self._load_class_labels()
     
-    def _load_class_labels(self) -> None:
+    def _load_class_labels(self) -> List[str]:
         """Load class labels from .labels.txt file"""
         labels_file = XRAY_MODELS_DIR / "xray_classifier.labels.txt"
         
@@ -70,18 +69,21 @@ class XrayManager:
                     content = f.read().strip()
                     if content.startswith('[') and content.endswith(']'):
                         # JSON format
-                        self.class_labels = json.loads(content)
+                        labels = json.loads(content)
                     else:
                         # Plain text format, one label per line
-                        self.class_labels = [line.strip() for line in content.split('\n') if line.strip()]
+                        labels = [line.strip() for line in content.split('\n') if line.strip()]
                 
-                logger.info(f"Loaded X-ray class labels: {self.class_labels}")
+                logger.info(f"Loaded X-ray class labels: {labels}")
+                return labels
             else:
                 logger.warning(f"X-ray labels file not found: {labels_file}, using defaults")
+                return ["normal", "pcos"]
                 
         except Exception as e:
             logger.error(f"Failed to load X-ray class labels: {str(e)}")
             logger.info("Using default labels: ['normal', 'pcos']")
+            return ["normal", "pcos"]
     
     def can_lazy_load_yolo(self) -> bool:
         """Check if YOLO model can be lazy loaded"""

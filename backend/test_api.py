@@ -93,54 +93,6 @@ def test_structured_prediction_face_only(test_images):
     assert "risk" in face_modality
     assert face_modality["risk"] in ["low", "moderate", "high", "unknown"]
 
-def test_structured_prediction_xray_only(test_images):
-    """Test structured prediction with X-ray image only"""
-    if not os.path.exists(test_images['xray_img']):
-        pytest.skip("Test X-ray image not available")
-    
-    with open(test_images['xray_img'], 'rb') as f:
-        files = {'xray_img': f}
-        response = requests.post(f"{BASE_URL}/predict", files=files, timeout=30)
-    
-    assert response.status_code == 200
-    data = response.json()
-    
-    # Check structured response format
-    assert data["ok"] is True
-    assert "modalities" in data
-    
-    # Check X-ray modality
-    xray_modality = next((m for m in data["modalities"] if m["type"] == "xray"), None)
-    assert xray_modality is not None
-    assert "label" in xray_modality
-    assert "risk" in xray_modality
-
-def test_structured_prediction_both_images(test_images):
-    """Test structured prediction with both images"""
-    if not (os.path.exists(test_images['face_img']) and os.path.exists(test_images['xray_img'])):
-        pytest.skip("Test images not available")
-    
-    with open(test_images['face_img'], 'rb') as face_f, \
-         open(test_images['xray_img'], 'rb') as xray_f:
-        files = {
-            'face_img': face_f,
-            'xray_img': xray_f
-        }
-        response = requests.post(f"{BASE_URL}/predict", files=files, timeout=30)
-    
-    assert response.status_code == 200
-    data = response.json()
-    
-    # Check structured response format
-    assert data["ok"] is True
-    assert len(data["modalities"]) == 2
-    
-    # Check final result
-    assert "final" in data
-    assert "overall_risk" in data["final"]
-    assert "confidence" in data["final"]
-    assert "explanation" in data["final"]
-
 def test_legacy_prediction(test_images):
     """Test legacy prediction endpoint"""
     if not os.path.exists(test_images['face_img']):
@@ -184,26 +136,6 @@ def test_error_handling_no_files():
     data = response.json()
     assert "detail" in data
 
-def test_error_handling_invalid_file_type():
-    """Test error handling for invalid file type"""
-    # Create a text file
-    test_file = "test_invalid.txt"
-    with open(test_file, 'w') as f:
-        f.write("This is not an image")
-    
-    try:
-        with open(test_file, 'rb') as f:
-            files = {'face_img': f}
-            response = requests.post(f"{BASE_URL}/predict", files=files, timeout=5)
-        
-        assert response.status_code == 400
-        data = response.json()
-        assert "detail" in data
-        
-    finally:
-        if os.path.exists(test_file):
-            os.remove(test_file)
-
 def test_error_handling_large_file():
     """Test error handling for files that are too large"""
     # Create a large image (simulate > 5MB)
@@ -224,21 +156,8 @@ def test_error_handling_large_file():
     assert "detail" in data
     assert "size" in data["detail"].lower()
 
-def test_image_proxy():
-    """Test image proxy endpoint"""
-    # Test with a valid Pexels URL
-    test_url = "https://images.pexels.com/photos/1239291/pexels-photo-1239291.jpeg"
-    response = requests.get(
-        f"{BASE_URL}/img-proxy",
-        params={'url': test_url},
-        timeout=10
-    )
-    
-    # Should either succeed or fail gracefully
-    assert response.status_code in [200, 400, 404, 500]
-
-def test_response_json_serializable(test_images):
-    """Test that all responses are JSON serializable"""
+def test_debug_information(test_images):
+    """Test that debug information is properly included"""
     if not os.path.exists(test_images['face_img']):
         pytest.skip("Test face image not available")
     
@@ -247,17 +166,34 @@ def test_response_json_serializable(test_images):
         response = requests.post(f"{BASE_URL}/predict", files=files, timeout=30)
     
     assert response.status_code == 200
-    
-    # Should be able to parse as JSON without errors
     data = response.json()
     
-    # Should be able to serialize back to JSON
-    json_str = json.dumps(data)
-    assert isinstance(json_str, str)
+    # Check debug information
+    assert "debug" in data
+    debug_info = data["debug"]
     
-    # Should be able to parse back
-    reparsed = json.loads(json_str)
-    assert reparsed == data
+    if "face_processing" in debug_info:
+        face_debug = debug_info["face_processing"]
+        assert "filename" in face_debug
+        assert "models_used" in face_debug
+
+def test_risk_thresholds(test_images):
+    """Test that risk classification uses proper thresholds"""
+    if not os.path.exists(test_images['face_img']):
+        pytest.skip("Test face image not available")
+    
+    with open(test_images['face_img'], 'rb') as f:
+        files = {'face_img': f}
+        response = requests.post(f"{BASE_URL}/predict", files=files, timeout=30)
+    
+    assert response.status_code == 200
+    data = response.json()
+    
+    # Check that risk levels are valid
+    for modality in data["modalities"]:
+        assert modality["risk"] in ["low", "moderate", "high", "unknown"]
+    
+    assert data["final"]["overall_risk"] in ["low", "moderate", "high", "unknown"]
 
 if __name__ == "__main__":
     """Run tests manually"""

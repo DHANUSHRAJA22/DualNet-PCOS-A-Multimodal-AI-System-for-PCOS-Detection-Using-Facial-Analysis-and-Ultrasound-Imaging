@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 # Set working directory
 WORKDIR /app
@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     libgomp1 \
     libgthread-2.0-0 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -31,6 +32,7 @@ ENV PYTHONPATH=/app
 ENV HOST=0.0.0.0
 ENV PORT=5000
 ENV DEBUG=false
+ENV ALLOWED_ORIGINS=*
 
 # Expose port
 EXPOSE 5000
@@ -39,5 +41,5 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:5000/health || exit 1
 
-# Run application
-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
+# Run application with gunicorn for production
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "app:app"]

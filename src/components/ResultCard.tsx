@@ -148,7 +148,7 @@ export function ResultCard({
                       </Badge>
                     </div>
                     <div className="text-xs text-slate-600 mt-1">
-                      Box: [{detection.box.map(n => n.toFixed(0)).join(', ')}]
+                      Box: [{detection.box.map(n => Math.round(n)).join(', ')}]
                     </div>
                   </div>
                 ))}

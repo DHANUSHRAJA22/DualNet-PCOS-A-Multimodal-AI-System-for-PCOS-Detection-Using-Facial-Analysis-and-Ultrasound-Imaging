@@ -53,7 +53,12 @@ app = FastAPI(
 )
 
 # Enhanced CORS middleware with environment-based origins
-allowed_origins = settings.ALLOWED_ORIGINS if not settings.DEBUG else ["*"]
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "*")
+if allowed_origins_str == "*":
+    allowed_origins = ["*"]
+else:
+    allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -239,19 +244,19 @@ async def structured_predict(
     """
     start_time = datetime.now()
     
-    # Clean up old files
-    cleanup_old_files()
-    
-    # Validate request
-    validate_request_files(face_img, xray_img)
-    
-    # Validate individual files
-    if face_img:
-        validate_uploaded_file(face_img)
-    if xray_img:
-        validate_uploaded_file(xray_img)
-    
     try:
+        # Clean up old files
+        cleanup_old_files()
+        
+        # Validate request
+        validate_request_files(face_img, xray_img)
+        
+        # Validate individual files
+        if face_img:
+            validate_uploaded_file(face_img)
+        if xray_img:
+            validate_uploaded_file(xray_img)
+        
         from schemas import ModalityResult, FinalResult
         
         modalities = []
@@ -268,7 +273,8 @@ async def structured_predict(
                 debug_info["face_processing"] = {
                     "filename": face_img.filename,
                     "models_used": face_result.get("models_used", []),
-                    "gender_detected": face_result.get("gender", {}).get("label")
+                    "gender_detected": face_result.get("gender", {}).get("label"),
+                    "weights_used": face_result.get("ensemble", {}).get("weights_used") if face_result.get("ensemble") else None
                 }
                 
                 # Extract data for modality result
@@ -311,11 +317,26 @@ async def structured_predict(
             logger.info("Processing X-ray image")
             try:
                 xray_result = await xray_manager.process_xray_image(xray_img)
+                
+                # Enhanced debug info with ROI details
+                roi_details = []
+                if xray_result.get("per_roi"):
+                    for roi in xray_result["per_roi"]:
+                        roi_details.append({
+                            "roi_id": roi.roi_id,
+                            "box": roi.box,
+                            "per_model": roi.per_model,
+                            "ensemble": roi.ensemble.dict() if roi.ensemble else None
+                        })
+                
                 debug_info["xray_processing"] = {
                     "filename": xray_img.filename,
                     "detections_count": len(xray_result.get("detections", [])),
                     "roi_count": len(xray_result.get("per_roi", [])),
-                    "models_used": xray_result.get("models_used", [])
+                    "models_used": xray_result.get("models_used", []),
+                    "weights_used": xray_result.get("ensemble", {}).get("weights_used") if xray_result.get("ensemble") else None,
+                    "roi_details": roi_details,
+                    "yolo_confidences": [det.conf for det in xray_result.get("detections", [])]
                 }
                 
                 # Extract data for modality result
@@ -357,8 +378,12 @@ async def structured_predict(
         debug_info["final_fusion"] = {
             "face_score": face_score,
             "xray_score": xray_score,
-            "fusion_method": "weighted_average",
-            "modalities_used": final_result.get("modalities_used", [])
+            "fusion_method": final_result.get("fusion_method", "weighted_average"),
+            "modalities_used": final_result.get("modalities_used", []),
+            "thresholds_used": {
+                "low": settings.RISK_LOW_THRESHOLD,
+                "high": settings.RISK_HIGH_THRESHOLD
+            }
         }
         
         # Create final assessment
@@ -388,9 +413,18 @@ async def structured_predict(
     except Exception as e:
         logger.error(f"Structured prediction failed: {str(e)}")
         logger.error(traceback.format_exc())
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
+        
+        return StructuredPredictionResponse(
+            ok=False,
+            modalities=[],
+            final=FinalResult(
+                overall_risk="unknown",
+                confidence=0.0,
+                explanation="Analysis failed due to internal error"
+            ),
+            warnings=[f"Internal error: {str(e)}"],
+            processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
+            debug={"error": str(e)}
         )
 
 @app.post("/predict-legacy", response_model=LegacyPredictionResponse)
@@ -408,28 +442,33 @@ async def legacy_predict(
         structured_response = await structured_predict(face_img, xray_img)
         
         # Convert to legacy format
-        legacy_response = LegacyPredictionResponse(ok=True)
+        legacy_response = LegacyPredictionResponse(ok=structured_response.ok)
         
-        # Extract face data
-        face_modality = next((m for m in structured_response.modalities if m["type"] == "face"), None)
-        if face_modality:
-            legacy_response.face_pred = face_modality["label"]
-            legacy_response.face_scores = face_modality["scores"]
-            legacy_response.face_img = face_modality.get("original_img")
-            legacy_response.face_risk = face_modality["risk"]
-        
-        # Extract X-ray data
-        xray_modality = next((m for m in structured_response.modalities if m["type"] == "xray"), None)
-        if xray_modality:
-            legacy_response.xray_pred = xray_modality["label"]
-            legacy_response.xray_img = xray_modality.get("original_img")
-            legacy_response.yolo_vis = xray_modality.get("visualization")
-            legacy_response.found_labels = xray_modality.get("found_labels")
-            legacy_response.xray_risk = xray_modality["risk"]
-        
-        # Final results
-        legacy_response.combined = structured_response.final["explanation"]
-        legacy_response.overall_risk = structured_response.final["overall_risk"]
+        if structured_response.ok:
+            # Extract face data
+            face_modality = next((m for m in structured_response.modalities if m["type"] == "face"), None)
+            if face_modality:
+                legacy_response.face_pred = face_modality["label"]
+                legacy_response.face_scores = face_modality["scores"]
+                legacy_response.face_img = face_modality.get("original_img")
+                legacy_response.face_risk = face_modality["risk"]
+            
+            # Extract X-ray data
+            xray_modality = next((m for m in structured_response.modalities if m["type"] == "xray"), None)
+            if xray_modality:
+                legacy_response.xray_pred = xray_modality["label"]
+                legacy_response.xray_img = xray_modality.get("original_img")
+                legacy_response.yolo_vis = xray_modality.get("visualization")
+                legacy_response.found_labels = xray_modality.get("found_labels")
+                legacy_response.xray_risk = xray_modality["risk"]
+            
+            # Final results
+            legacy_response.combined = structured_response.final["explanation"]
+            legacy_response.overall_risk = structured_response.final["overall_risk"]
+            legacy_response.message = "ok"
+        else:
+            # Handle error case
+            legacy_response.message = "; ".join(structured_response.warnings) if structured_response.warnings else "Analysis failed"
         
         return legacy_response
         
@@ -446,7 +485,7 @@ async def predict_file(
     type: str = Query("face", description="Analysis type: 'face' or 'xray'")
 ):
     """
-    Legacy single file upload endpoint
+    Single file upload endpoint for backward compatibility
     
     Accepts a single file and routes to appropriate analysis pipeline
     """
@@ -459,8 +498,8 @@ async def predict_file(
             raise HTTPException(status_code=400, detail="Type must be 'face' or 'xray'")
         
         return StandardResponse(
-            ok=True,
-            message="Analysis completed successfully",
+            ok=result.ok,
+            message="Analysis completed successfully" if result.ok else "Analysis failed",
             data=ensure_json_serializable(result.dict())
         )
         
@@ -525,8 +564,7 @@ async def global_exception_handler(request, exc):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "ok": False,
-            "message": "Internal server error",
-            "detail": str(exc) if settings.DEBUG else "An unexpected error occurred"
+            "details": str(exc) if settings.DEBUG else "An unexpected error occurred"
         }
     )
 

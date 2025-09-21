@@ -108,7 +108,7 @@ export function IndexPage() {
     setBackendStatus(currentStatus)
     
     if (currentStatus !== 'online') {
-      toast.error('Backend is not available. Please check your connection or set a valid API URL.')
+      toast.error('Backend is not available. Please check your connection.')
       setShowDiagnostics(true)
       return
     }
@@ -137,10 +137,20 @@ export function IndexPage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Analysis failed'
       
-      if (message.includes('ECONNREFUSED') || message.includes('fetch')) {
+      if (message.includes('ECONNREFUSED') || message.includes('fetch') || message.includes('NetworkError')) {
         showDiagnosticsDialog()
       } else {
-        toast.error(`Analysis failed: ${message}`)
+        // Parse backend error response
+        let errorMessage = message
+        try {
+          if (message.includes('{"ok":false')) {
+            const errorData = JSON.parse(message.substring(message.indexOf('{"ok":false')))
+            errorMessage = errorData.details || errorData.message || message
+          }
+        } catch {
+          // Use original message if parsing fails
+        }
+        toast.error(`Analysis failed: ${errorMessage}`)
       }
     } finally {
       setIsAnalyzing(false)

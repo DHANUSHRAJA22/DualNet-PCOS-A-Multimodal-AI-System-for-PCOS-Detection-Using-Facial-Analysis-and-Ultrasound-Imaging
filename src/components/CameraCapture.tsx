@@ -98,7 +98,7 @@ export function CameraCapture({ open, onOpenChange, onCapture }: CameraCapturePr
           return
         }
         
-        const file = new File([blob], `face-capture-${Date.now()}.jpg`, {
+        const file = new File([blob], `capture-${Date.now()}.jpg`, {
           type: 'image/jpeg',
           lastModified: Date.now(),
         })

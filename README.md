@@ -2,6 +2,17 @@
 
 A comprehensive, production-ready full-stack application for PCOS screening analysis using AI-powered facial recognition and X-ray analysis.
 
+## 🚀 Production Features
+
+- **Structured API Responses**: Rich JSON with per-model scores, ROI details, and debug information
+- **Legacy Compatibility**: `/predict-legacy` endpoint for existing frontends
+- **Enhanced Error Handling**: Consistent `{ok: true/false}` response format
+- **Dynamic Label Loading**: Class labels loaded from `.labels.txt` files
+- **Ensemble Models**: Support for VGG16, ResNet50, EfficientNet architectures
+- **Risk Thresholds**: Configurable probability bands (<0.33/0.33-0.66/>0.66)
+- **Docker Deployment**: Production-ready containerization
+- **Comprehensive Testing**: pytest test suite and cURL examples
+
 ## 🚀 Features
 
 ### Frontend (React + Vite + TypeScript)
@@ -32,6 +43,41 @@ A comprehensive, production-ready full-stack application for PCOS screening anal
 - **Risk Thresholds**: Configurable probability bands (<0.33/0.33-0.66/>0.66)
 - **Fallback Classification**: Full image analysis when no ROIs detected
 - **Legacy Compatibility**: /predict-legacy endpoint for existing clients
+
+## 🏃‍♂️ Quick Start (Production)
+
+### Using Docker (Recommended)
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd pcos-analyzer
+
+# Build and run backend with Docker
+cd backend
+docker build -t pcos-backend .
+docker run -p 5000:5000 -v ./models:/app/models:ro pcos-backend
+
+# Build frontend
+cd ../
+npm install
+npm run build
+# Serve dist/ with your preferred web server
+```
+
+### Environment Variables
+
+```bash
+# Backend (.env)
+ALLOWED_ORIGINS=http://localhost:5173,https://your-frontend.com
+DEBUG=false
+MAX_UPLOAD_MB=5
+HOST=0.0.0.0
+PORT=5000
+
+# Frontend
+VITE_API_BASE=https://your-backend.com
+```
 
 ## 🏃‍♂️ Quick Start
 
@@ -73,6 +119,38 @@ npm run dev
 - **API Documentation**: http://localhost:5000/docs
 - **Health Check**: http://localhost:5000/health
 
+## 🧠 Model Training
+
+### Train Ensemble Models
+
+```bash
+cd backend
+
+# Train ensemble of face models (VGG16, ResNet50, EfficientNet)
+python model.py --ensemble --type face --data_dir /path/to/face/data
+
+# Train ensemble of X-ray models
+python model.py --ensemble --type xray --data_dir /path/to/xray/data
+
+# Train single model
+python model.py --type face --data_dir /path/to/face/data --model_name my_face_model
+
+# Export model for serving
+python model.py --export models/face/my_model.h5 --format onnx
+```
+
+### Label Files
+
+Models automatically save labels in both JSON and plain text formats:
+
+```
+models/face/
+├── face_model_vgg16.h5
+├── face_model_vgg16.labels.txt     # ["non_pcos", "pcos"]
+├── face_model_vgg16.labels.json    # With metadata
+└── face_model_vgg16_metrics.json   # Training metrics
+```
+
 ## 📁 Model Setup
 
 Place your trained models in these exact locations:
@@ -106,6 +184,60 @@ non_pcos
 pcos
 ```
 ## 🔧 Configuration
+## 📡 API Endpoints (Enhanced)
+
+### POST /predict (New Structured Format)
+Enhanced prediction endpoint with rich metadata:
+
+```json
+{
+  "ok": true,
+  "modalities": [
+    {
+      "type": "face",
+      "label": "PCOS indicators detected",
+      "scores": [0.3, 0.7],
+      "risk": "high",
+      "per_model": {"vgg16": 0.65, "resnet50": 0.75},
+      "ensemble": {
+        "method": "weighted_average",
+        "score": 0.7,
+        "models_used": 2,
+        "weights_used": {"vgg16": 0.5, "resnet50": 0.5}
+      }
+    }
+  ],
+  "final": {
+    "overall_risk": "high",
+    "confidence": 0.75,
+    "explanation": "High risk: Multiple indicators detected"
+  },
+  "debug": {
+    "face_processing": {"models_used": ["vgg16", "resnet50"]},
+    "final_fusion": {"fusion_method": "discrete_rules"}
+  }
+}
+```
+
+### POST /predict-legacy (Backward Compatible)
+Returns flat format for existing frontends:
+
+```json
+{
+  "ok": true,
+  "face_pred": "PCOS indicators detected",
+  "face_scores": [0.3, 0.7],
+  "face_risk": "high",
+  "combined": "High risk: Multiple indicators detected",
+  "overall_risk": "high"
+}
+```
+
+### POST /predict-file
+Single file upload with type parameter:
+- `file`: Image file to analyze
+- `type`: Analysis type ('face' or 'xray')
+
 
 ### Backend Configuration
 
@@ -157,100 +289,13 @@ Returns enhanced model availability status with lazy-loading capability and deta
 }
 ```
 
-### POST /predict
-Enhanced prediction endpoint with structured response:
-- `face_img` (optional): Face image file
-- `xray_img` (optional): X-ray image file
-
-**Response Structure:**
-```json
-{
-  "ok": true,
-  "modalities": [
-    {
-      "type": "face",
-      "label": "PCOS indicators detected",
-      "scores": [0.3, 0.7],
-      "risk": "high",
-      "original_img": "/static/uploads/face-123.jpg",
-      "gender": {"male": 0.1, "female": 0.9, "label": "female"},
-      "per_model": {"vgg16": 0.65, "resnet50": 0.75},
-      "ensemble": {
-        "method": "weighted_average",
-        "score": 0.7,
-        "models_used": 2,
-        "weights_used": {"vgg16": 0.5, "resnet50": 0.5}
-      }
-    },
-    {
-      "type": "xray",
-      "label": "PCOS symptoms detected",
-      "scores": [0.8],
-      "risk": "high",
-      "original_img": "/static/uploads/xray-456.jpg",
-      "visualization": "/static/uploads/yolo-789.jpg",
-      "found_labels": ["cyst", "ovary"],
-      "detections": [
-        {"box": [100, 150, 200, 250], "conf": 0.85, "label": "cyst"}
-      ],
-      "per_roi": [
-        {
-          "roi_id": 0,
-          "box": [100, 150, 200, 250],
-          "per_model": {"xray_a": 0.75, "xray_b": 0.85},
-          "ensemble": {"method": "weighted_average", "score": 0.8, "models_used": 2}
-        }
-      ],
-      "per_model": {"xray_a": 0.75, "xray_b": 0.85},
-      "ensemble": {"method": "weighted_average", "score": 0.8, "models_used": 2}
-    }
-  ],
-  "final": {
-    "overall_risk": "high",
-    "confidence": 0.75,
-    "explanation": "High risk: Multiple indicators detected across modalities"
-  },
-  "warnings": [],
-  "processing_time_ms": 1250.5,
-  "debug": {
-    "face_processing": {"filename": "face.jpg", "models_used": ["vgg16", "resnet50"]},
-    "xray_processing": {"filename": "xray.jpg", "detections_count": 2, "roi_count": 1}
-  }
-}
-```
-
-### POST /predict-legacy
-Backward compatibility endpoint returning flat structure for existing frontends
-
-### POST /predict-file
-Single file upload endpoint with type parameter:
-- `file`: Image file to analyze
-- `type`: Analysis type ('face' or 'xray')
-
-Returns standard response format with structured data.
 ### GET /img-proxy?url=...
 Safe CORS proxy for external images
 
 ### Static Files
 - `/static/uploads/`: Uploaded images and YOLO visualizations
 
-## 🏗 Architecture
-
-### Face Analysis Pipeline
-1. **Gender Detection**: Classify male/female
-2. **Gender Gating**: Skip PCOS analysis for males
-3. **Per-Model Analysis**: Run each face model individually
-4. **Ensemble Fusion**: Weighted average → risk classification
-5. **Metadata Collection**: Store per-model scores and ensemble details
-
-### X-ray Analysis Pipeline
-1. **YOLO Detection**: Find ROIs → generate overlay
-2. **Per-ROI Analysis**: Crop and classify each detected region
-3. **ROI Ensemble**: Combine models for each ROI
-4. **Global Ensemble**: Average across all ROIs
-5. **Fallback**: Full image classification if no detections
-6. **Metadata Collection**: Store detections, ROI details, and ensemble info
-- **Moderate Risk**: 0.33-0.66 probability (configurable)
+## 🧪 Testing
 
 ### Automated Testing
 
@@ -273,39 +318,36 @@ curl http://127.0.0.1:5000/health
 
 # Test structured response
 curl -X POST "http://127.0.0.1:5000/predict" \
-  -F "face_img=@test_face.jpg" | jq '.modalities[0].per_model'
-
-# Test with face image only
-curl -X POST "http://127.0.0.1:5000/predict" \
-  -F "face_img=@test_face.jpg"
-
-# Test single file endpoint
-curl -X POST "http://127.0.0.1:5000/predict-file?type=face" \
-  -F "file=@test_face.jpg"
-# Test with X-ray only
-curl -X POST "http://127.0.0.1:5000/predict" \
-  -F "xray_img=@test_xray.jpg"
-
-# Test with both images
-curl -X POST "http://127.0.0.1:5000/predict" \
-  -F "face_img=@test_face.jpg" \
-  -F "xray_img=@test_xray.jpg"
+  -F "face_img=@test_face.jpg" | jq '.debug'
 
 # Test legacy compatibility
 curl -X POST "http://127.0.0.1:5000/predict-legacy" \
   -F "face_img=@test_face.jpg"
 ```
 
-### Frontend Testing
+## 🏗 Architecture
 
-1. Visit http://localhost:5173
-2. Check "Backend Status" shows "Online"
-3. Upload face and/or X-ray images
-4. Verify results display correctly
-5. Test sample images functionality
-6. Test camera capture (requires HTTPS in production)
-7. Check per-model breakdowns in results
-8. Verify ROI analysis for X-ray images
+### Face Analysis Pipeline
+1. **Gender Detection**: Classify male/female
+2. **Gender Gating**: Skip PCOS analysis for males
+3. **Per-Model Analysis**: Run each face model individually
+4. **Ensemble Fusion**: Weighted average → risk classification
+5. **Metadata Collection**: Store per-model scores and ensemble details
+
+### X-ray Analysis Pipeline
+1. **YOLO Detection**: Find ROIs → generate overlay
+2. **Per-ROI Analysis**: Crop and classify each detected region
+3. **ROI Ensemble**: Combine models for each ROI
+4. **Global Ensemble**: Average across all ROIs
+5. **Fallback**: Full image classification if no detections
+6. **Metadata Collection**: Store detections, ROI details, and ensemble info
+
+
+### Risk Classification
+- **Low Risk**: <0.33 probability
+- **Moderate Risk**: 0.33-0.66 probability  
+- **High Risk**: ≥0.66 probability
+- **Discrete Fusion**: Enhanced logic for multi-modal assessment
 
 ## 🐳 Production Deployment
 
@@ -336,6 +378,7 @@ services:
       - PORT=5000
       - DEBUG=false
       - MAX_UPLOAD_MB=5
+      - ALLOWED_ORIGINS=https://your-frontend.com
     volumes:
       - ./backend/models:/app/models:ro
       - ./backend/static:/app/static
@@ -353,12 +396,27 @@ services:
 export DEBUG=false
 export HOST=0.0.0.0
 export PORT=5000
-export ALLOWED_ORIGINS="https://your-frontend.com"
+export ALLOWED_ORIGINS=https://your-frontend.com,https://your-domain.com
 export MAX_UPLOAD_MB=5
 
 # Production frontend
 export VITE_API_BASE=https://your-backend.com
 npm run build
+```
+
+### Heroku Deployment
+
+```bash
+# Deploy backend to Heroku
+cd backend
+heroku create your-pcos-backend
+heroku config:set ALLOWED_ORIGINS=https://your-frontend.com
+heroku config:set DEBUG=false
+git push heroku main
+
+# Deploy frontend to Netlify/Vercel
+npm run build
+# Upload dist/ folder
 ```
 
 ## 🛡 Security & Privacy
@@ -414,16 +472,16 @@ npm run build
    - Check file size (5MB limit)
    - Verify supported formats (JPEG/PNG/WebP)
    - Ensure proper MIME type
-
-## 📄 License
-
-Educational and research use only. Not for medical diagnosis or treatment.
-
-
-
-7. **Label Loading Issues**
+4. **Label Loading Issues**
    - Ensure .labels.txt files exist in model directories
+   - Check JSON format: `["non_pcos", "pcos"]`
    - Review backend logs for label loading errors
+
+5. **Docker Issues**
+   - Ensure models directory is mounted: `-v ./models:/app/models:ro`
+   - Check environment variables are set correctly
+   - Verify port mapping: `-p 5000:5000`
+
 ## 👨‍💻 Author
 
 **DHANUSH RAJA (21MIC0158)**
