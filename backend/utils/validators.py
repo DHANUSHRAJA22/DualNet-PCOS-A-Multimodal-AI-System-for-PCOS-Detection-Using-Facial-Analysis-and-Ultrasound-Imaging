@@ -144,3 +144,20 @@ def validate_proxy_url(url: str) -> bool:
         
     except Exception:
         return False
+
+def validate_request_files(face_img: Optional[UploadFile], xray_img: Optional[UploadFile]) -> None:
+    """
+    Validate that at least one image is provided
+    
+    Args:
+        face_img: Optional face image upload
+        xray_img: Optional X-ray image upload
+        
+    Raises:
+        HTTPException: If no images provided
+    """
+    if not face_img and not xray_img:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one image (face_img or xray_img) must be provided"
+        )

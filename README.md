@@ -1,260 +1,278 @@
-# Multimodal PCOS Analyzer
+# Multimodal PCOS Analyzer - Full Stack Application
 
-A comprehensive, production-ready frontend for PCOS screening analysis built with Vite + React + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion.
+A comprehensive, production-ready full-stack application for PCOS screening analysis using AI-powered facial recognition and X-ray analysis.
 
-## Features
+## 🚀 Features
 
+### Frontend (React + Vite + TypeScript)
 - **Dual Image Upload**: Support for both facial images and uterus X-rays
 - **Camera Capture**: Built-in camera functionality for real-time image capture
-- **EXIF Orientation Fix**: Automatic image orientation correction
-- **Responsive Design**: Mobile-first approach with WCAG accessibility compliance
-- **Real-time Analysis**: Integration with Flask backend for AI-powered screening
-- **Smooth Animations**: Framer Motion powered scroll animations and micro-interactions
-- **Production Ready**: Type-safe, optimized, and deployment-ready
+- **Sample Images**: Pre-loaded demo images for testing
+- **Responsive Design**: Mobile-first approach with accessibility compliance
+- **Real-time Analysis**: Integration with FastAPI backend for AI-powered screening
+- **Smooth Animations**: Framer Motion powered interactions
+- **Backend Status**: Real-time health monitoring with API configuration
 
-## Quick Start
+### Backend (FastAPI + TensorFlow + YOLO)
+- **Multi-modal Analysis**: Facial recognition + X-ray morphological analysis
+- **Gender Gating**: Male faces skip PCOS analysis with clear messaging
+- **Ensemble Models**: Multiple TensorFlow models with weighted averaging
+- **YOLO Detection**: Object detection for X-ray ROI classification
+- **Production Ready**: Comprehensive error handling, logging, and validation
+- **CORS Support**: Configured for frontend integration
+- **Static File Serving**: Automatic image serving and cleanup
 
-### Development
+## 🏃‍♂️ Quick Start
 
-1. Install dependencies:
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
+- Your trained model files (see Model Setup below)
+
+### 1. Backend Setup
+
 ```bash
-npm install
+# Navigate to backend directory
+cd backend
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Add your model files (see Model Setup section)
+# Place models in backend/models/ with exact filenames
+
+# Start the backend server
+uvicorn app:app --reload --port 5000
 ```
 
-2. Start the development server:
+### 2. Frontend Setup
+
 ```bash
+# Install dependencies (from root directory)
+npm install
+
+# Start the development server
 npm run dev
 ```
 
-3. Open http://localhost:8080 in your browser
+### 3. Access the Application
 
-### Backend Setup
+- **Frontend**: http://localhost:5173
+- **Backend API**: http://localhost:5000
+- **API Documentation**: http://localhost:5000/docs
+- **Health Check**: http://localhost:5000/health
 
-Ensure your Flask backend is running on port 5000:
+## 📁 Model Setup
 
-```bash
-# In your backend directory
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python app.py
+Place your trained models in these exact locations:
+
+```
+backend/models/
+├── face/
+│   ├── gender_classifier.h5      # Gender detection model
+│   ├── face_model_A.h5           # Face PCOS model 1 (VGG16)
+│   └── face_model_B.h5           # Face PCOS model 2 (ResNet50)
+├── xray/
+│   ├── xray_model_A.h5           # X-ray PCOS model 1
+│   └── xray_model_B.h5           # X-ray PCOS model 2
+└── yolo/
+    └── bestv8.pt                 # YOLO detection model
 ```
 
-The frontend will automatically proxy API requests to `http://127.0.0.1:5000`.
+**Important**: Use these exact filenames. The backend is configured to load models from these specific paths.
 
-## Production Usage
+## 🔧 Configuration
 
-### Build for Production
+### Backend Configuration
+
+Edit `backend/config.py` to adjust:
+- Model file paths and weights
+- Risk thresholds
+- File upload limits
+- CORS origins
+
+### Frontend Configuration
+
+The frontend automatically detects the backend URL:
+1. Query parameter: `?api=https://your-backend.com`
+2. Environment variable: `VITE_API_BASE`
+3. Default: Vite proxy to localhost:5000
+
+### Environment Variables
 
 ```bash
+# Backend
+export HOST=127.0.0.1
+export PORT=5000
+export DEBUG=true
+export MAX_UPLOAD_MB=5
+export STATIC_TTL_SECONDS=3600
+
+# Frontend
+export VITE_API_BASE=http://localhost:5000
+```
+
+## 📡 API Endpoints
+
+### GET /health
+Returns model availability status
+
+### POST /predict
+Main prediction endpoint accepting multipart form data:
+- `face_img` (optional): Face image file
+- `xray_img` (optional): X-ray image file
+
+### POST /predict-legacy
+Backward compatibility endpoint (same as /predict)
+
+### GET /img-proxy?url=...
+Safe CORS proxy for external images
+
+### Static Files
+- `/static/uploads/`: Uploaded images and YOLO visualizations
+
+## 🏗 Architecture
+
+### Face Analysis Pipeline
+1. **Gender Detection**: Classify male/female
+2. **Gender Gating**: Skip PCOS analysis for males
+3. **PCOS Ensemble**: Multiple models → weighted average → risk classification
+
+### X-ray Analysis Pipeline
+1. **YOLO Detection**: Find ROIs → generate overlay
+2. **ROI Classification**: Classify each detected region
+3. **Fallback**: Full image classification if no detections
+4. **Ensemble**: Weighted average → risk classification
+
+### Risk Classification
+- **Low Risk**: < 33% probability
+- **Moderate Risk**: 33-66% probability  
+- **High Risk**: ≥ 66% probability
+
+## 🧪 Testing
+
+### Manual Testing
+
+```bash
+# Test health endpoint
+curl http://127.0.0.1:5000/health
+
+# Test with face image only
+curl -X POST "http://127.0.0.1:5000/predict" \
+  -F "face_img=@test_face.jpg"
+
+# Test with X-ray only
+curl -X POST "http://127.0.0.1:5000/predict" \
+  -F "xray_img=@test_xray.jpg"
+
+# Test with both images
+curl -X POST "http://127.0.0.1:5000/predict" \
+  -F "face_img=@test_face.jpg" \
+  -F "xray_img=@test_xray.jpg"
+```
+
+### Frontend Testing
+
+1. Visit http://localhost:5173
+2. Check "Backend Status" shows "Online"
+3. Upload face and/or X-ray images
+4. Verify results display correctly
+5. Test sample images functionality
+6. Test camera capture (requires HTTPS in production)
+
+## 🐳 Production Deployment
+
+### Docker Deployment
+
+```bash
+# Build and run backend
+cd backend
+docker build -t pcos-backend .
+docker run -p 5000:5000 -v ./models:/app/models:ro pcos-backend
+
+# Build frontend
 npm run build
-npm run preview
+# Serve dist/ with your preferred web server
 ```
 
-### Deploy with Custom API
+### Environment Setup
 
-Deploy the built application to any static hosting service. Use the `?api=` query parameter to specify your backend URL:
+```bash
+# Production backend
+export DEBUG=false
+export HOST=0.0.0.0
+export PORT=5000
+export ALLOWED_ORIGINS="https://your-frontend.com"
 
-```
-https://your-app.com?api=https://your-backend-api.com
-```
-
-Example:
-```
-https://pcos-analyzer.netlify.app?api=https://api.pcos-backend.com
-```
-
-## API Integration
-
-### Backend Requirements
-
-Your Flask backend should provide these endpoints:
-
-- `POST /predict` - Image analysis endpoint (multipart form-data)
-  - Accepts: `face_img` and/or `xray_img` files
-  - Returns: JSON with analysis results
-- `GET /health` - Health check endpoint
-- `GET /static/*` - Static file serving for result images
-
-### Request Format
-
-```typescript
-// FormData with one or both fields
-face_img: File  // Face image file
-xray_img: File  // X-ray image file
+# Production frontend
+export VITE_API_BASE=https://your-backend.com
+npm run build
 ```
 
-### Response Format
+## 🛡 Security & Privacy
 
-```typescript
-{
-  ok?: boolean;
-  face_pred?: string;
-  face_scores?: number[];
-  face_img?: string;
-  xray_pred?: string;
-  yolo_vis?: string;
-  found_labels?: string[];
-  xray_img?: string;
-  combined?: string;
-}
-```
+- **File Validation**: Strict MIME type and size checking
+- **Safe Filenames**: Sanitized to prevent path traversal
+- **CORS Protection**: Configurable allowed origins
+- **Image Proxy**: Whitelisted hosts only
+- **No Permanent Storage**: Images cleaned up automatically
+- **Medical Disclaimer**: Prominently displayed
 
-## Testing Checklist
+## 📊 Monitoring
 
-- [ ] Face image upload only
-- [ ] X-ray image upload only
-- [ ] Both images uploaded simultaneously
-- [ ] Camera capture functionality
-- [ ] Backend health check (`/health` endpoint)
-- [ ] Production deployment with `?api=` parameter
-- [ ] Mobile responsiveness
-- [ ] Accessibility compliance
-- [ ] Error handling (network failures, invalid files)
-- [ ] Smooth animations and micro-interactions
+### Backend Monitoring
+- Health endpoint for model status
+- Structured logging with timestamps
+- Processing time tracking
+- Error rate monitoring
 
-## Technology Stack
+### Frontend Monitoring
+- Backend connectivity status
+- Real-time health checks
+- User-friendly error messages
+- Performance metrics
 
-- **Frontend**: Vite + React 18 + TypeScript
-- **Styling**: TailwindCSS + shadcn/ui components
-- **Animations**: Framer Motion
-- **Routing**: React Router DOM
-- **State Management**: React hooks
-- **Image Processing**: Custom EXIF orientation correction
-- **Notifications**: Sonner for toast messages
-- **Icons**: Lucide React
-- **Development**: ESLint + TypeScript strict mode
+## 🔍 Troubleshooting
 
-## File Structure
+### Common Issues
 
-```
-├── src/
-│   ├── components/
-│   │   ├── ui/              # shadcn/ui components
-│   │   ├── UploadArea.tsx   # File upload widget
-│   │   ├── CameraCapture.tsx # Camera modal
-│   │   ├── ResultCard.tsx   # Result display
-│   │   └── MedicalDisclaimer.tsx
-│   ├── pages/
-│   │   ├── Index.tsx        # Upload page
-│   │   └── Results.tsx      # Results page
-│   ├── lib/
-│   │   ├── api.ts          # API utilities
-│   │   ├── image.ts        # Image processing
-│   │   └── utils.ts        # General utilities
-│   └── styles/
-│       └── globals.css     # Global styles
-├── vite.config.ts          # Vite configuration
-└── tailwind.config.ts      # Tailwind configuration
-```
+1. **Backend Status: Unreachable**
+   - Check if backend is running on port 5000
+   - Verify CORS configuration
+   - For sandbox environments, use `?api=` parameter
 
-## Security & Privacy
+2. **Models Not Loading**
+   - Verify model files are in correct locations
+   - Check file permissions
+   - Review backend logs for loading errors
 
-- All image processing happens client-side before upload
-- No images are stored permanently on the frontend
-- EXIF data is processed locally for orientation correction
-- Medical disclaimer prominently displayed
-- Educational/research use only
+3. **CORS Errors**
+   - Ensure frontend origin is in `ALLOWED_ORIGINS`
+   - Check that backend returns proper headers
+   - Verify no 500 errors masquerading as CORS issues
 
-## Browser Support
+4. **File Upload Failures**
+   - Check file size (5MB limit)
+   - Verify supported formats (JPEG/PNG/WebP)
+   - Ensure proper MIME type
 
-- Modern browsers with ES2020 support
-- Camera API requires HTTPS in production
-- File drag-and-drop supported
-- Responsive design for all viewport sizes
-
-## Contributing
-
-1. Follow TypeScript strict mode
-2. Use provided ESLint configuration
-3. Ensure accessibility compliance
-4. Test on multiple devices and browsers
-5. Update documentation for new features
-
-## License
+## 📄 License
 
 Educational and research use only. Not for medical diagnosis or treatment.
 
----
+## 👨‍💻 Author
 
-## Running Backend
-
-### Local Development
-
-### Local Development (when you have direct access to your machine)
-
-If you're running this locally on your own machine:
-
-1. **Start Flask backend** (in a separate terminal):
-```bash
-cd /path/to/your/backend/directory
-python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python app.py  # Runs on http://127.0.0.1:5000
-```
-
-2. **Start frontend** (in this terminal):
-```bash
-npm install
-npm run dev  # Runs on http://localhost:8080
-```
-
-3. **Visit**: http://localhost:8080
-
-The frontend will automatically proxy API calls to your local Flask server at 127.0.0.1:5000.
-
-### Sandbox Environments (StackBlitz, CodeSandbox, etc.)
-
-**IMPORTANT**: If you're running this in StackBlitz, CodeSandbox, or similar browser-based environments, the proxy to `127.0.0.1:5000` will fail with `ECONNREFUSED` errors. This is expected because these sandboxes cannot access your local machine.
-
-**Solution**: You need to expose your Flask backend publicly:
-
-1. **Expose your backend publicly**:
-   - **Option A - Using ngrok** (recommended for testing):
-     ```bash
-     # Install ngrok from https://ngrok.com/
-     # In your backend directory, start Flask:
-     python app.py
-     
-     # In another terminal:
-     ngrok http 5000
-     # Copy the https://abc123.ngrok.io URL
-     ```
-   
-   - **Option B - Deploy to cloud**:
-     Deploy your Flask backend to Render, Railway, Heroku, or similar platforms.
-
-2. **Open the app with the API parameter**:
-   ```
-   https://stackblitz.com/~/your-project?api=https://YOUR-PUBLIC-BACKEND-URL
-   ```
-   
-   Example:
-   ```
-   https://stackblitz.com/~/github-abc123?api=https://abc123.ngrok.io
-   ```
-
-3. **Verify backend is working**: 
-   Open `https://YOUR-PUBLIC-BACKEND-URL/health` in a new browser tab. 
-   It should return JSON: `{"status": "ok", "models": {...}}`
-
-### Troubleshooting Connection Issues
-
-**If you see "Backend Status: Unreachable" or proxy errors:**
-
-1. **Check if you're in a sandbox**: Look at your URL. If it contains `stackblitz.com`, `codesandbox.io`, etc., you're in a sandbox and need to use the `?api=` parameter method above.
-
-2. **Verify your backend is running**: 
-   - Local: Visit `http://127.0.0.1:5000/health` in your browser
-   - Public: Visit `https://your-backend-url/health` in your browser
-   - Should return: `{"status": "ok", "models": {"face": true, "yolo": true}}`
-
-3. **Use the "Set API URL" button**: Click the button next to "Backend Status" to manually configure your backend URL.
-
-4. **Common solutions**:
-   - **Local development**: Make sure Flask is running on port 5000
-   - **Sandbox environments**: Use ngrok or deploy your backend, then add `?api=https://your-backend-url` to the frontend URL
-   - **CORS issues**: Ensure your Flask backend has proper CORS headers configured
+**DHANUSH RAJA (21MIC0158)**
 
 ---
 
-**Project by DHANUSH RAJA (21MIC0158)**
+## 🚀 Ready to Deploy!
+
+This full-stack application is production-ready. Simply:
+
+1. **Add your trained models** to the specified paths
+2. **Start the backend** with `uvicorn app:app --port 5000`
+3. **Start the frontend** with `npm run dev`
+4. **Access the application** at http://localhost:5173
+
+The application will automatically handle model loading, ensemble predictions, file management, and provide a complete PCOS screening interface!

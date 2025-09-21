@@ -12,12 +12,12 @@ from typing import Dict, Optional, Any, Tuple
 from pathlib import Path
 import numpy as np
 from PIL import Image
+import io
 from fastapi import UploadFile
 
 # Import TensorFlow and suppress warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import tensorflow as tf
-import keras
 
 from config import settings, FACE_MODELS_DIR, UPLOADS_DIR
 from utils.validators import validate_image, get_safe_filename
@@ -42,10 +42,8 @@ class FaceManager:
         
         # Model status tracking
         self.model_status = {
-            "gender_detector": {"status": "not_loaded", "file_exists": False, "path": None, "error": None},
-            "face_vgg16": {"status": "not_loaded", "file_exists": False, "path": None, "error": None},
-            "face_resnet50": {"status": "not_loaded", "file_exists": False, "path": None, "error": None},
-            "face_efficientnet_b0": {"status": "not_loaded", "file_exists": False, "path": None, "error": None},
+            "gender": {"loaded": False, "available": False, "error": None},
+            "face": {"loaded": False, "available": False, "error": None}
         }
         
         self._load_models()
@@ -67,58 +65,49 @@ class FaceManager:
         """Load gender classification model"""
         gender_path = FACE_MODELS_DIR / settings.GENDER_MODEL
         
-        self.model_status["gender_detector"]["file_exists"] = gender_path.exists()
-        self.model_status["gender_detector"]["path"] = str(gender_path)
+        self.model_status["gender"]["available"] = gender_path.exists()
         
         try:
             if gender_path.exists():
                 self.gender_model = tf.keras.models.load_model(str(gender_path), compile=False)
                 self.can_predict_gender = True
-                
-                self.model_status["gender_detector"]["status"] = "loaded"
+                self.model_status["gender"]["loaded"] = True
                 logger.info(f"Loaded gender model: {gender_path}")
             else:
                 logger.warning(f"Gender model not found: {gender_path}")
-                self.model_status["gender_detector"]["error"] = "File not found"
+                self.model_status["gender"]["error"] = "File not found"
                 
         except Exception as e:
             logger.error(f"Failed to load gender model: {str(e)}")
-            self.model_status["gender_detector"]["status"] = "error"
-            self.model_status["gender_detector"]["error"] = str(e)
+            self.model_status["gender"]["error"] = str(e)
     
     def _load_pcos_models(self) -> None:
         """Load PCOS classification models"""
-        for model_name, filename in settings.FACE_PCOS_MODELS.items():
-            model_path = FACE_MODELS_DIR / filename
-            status_key = f"face_{model_name}"
-            
-            self.model_status[status_key]["file_exists"] = model_path.exists()
-            self.model_status[status_key]["path"] = str(model_path)
+        loaded_count = 0
+        
+        for model_name, model_config in settings.FACE_PCOS_MODELS.items():
+            model_path = FACE_MODELS_DIR / model_config["path"]
             
             try:
                 if model_path.exists():
                     model = tf.keras.models.load_model(str(model_path), compile=False)
-                    self.pcos_models[model_name] = model
-                    
-                    self.model_status[status_key]["status"] = "loaded"
+                    self.pcos_models[model_name] = {
+                        "model": model,
+                        "config": model_config
+                    }
+                    loaded_count += 1
                     logger.info(f"Loaded PCOS model {model_name}: {model_path}")
                 else:
                     logger.warning(f"PCOS model {model_name} not found: {model_path}")
-                    self.model_status[status_key]["error"] = "File not found"
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
-                self.model_status[status_key]["status"] = "error"
-                self.model_status[status_key]["error"] = str(e)
-    
-    def _get_input_size(self, model_name: str) -> Tuple[int, int]:
-        """Get input size for specific model"""
-        if model_name in ["vgg16", "resnet50"]:
-            return (100, 100)
-        elif model_name == "efficientnet_b0":
-            return (224, 224)
-        else:
-            return (224, 224)  # Default
+        
+        self.model_status["face"]["loaded"] = loaded_count > 0
+        self.model_status["face"]["available"] = any(
+            (FACE_MODELS_DIR / config["path"]).exists() 
+            for config in settings.FACE_PCOS_MODELS.values()
+        )
     
     def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int]) -> np.ndarray:
         """
@@ -172,8 +161,8 @@ class FaceManager:
             }
         
         try:
-            # Preprocess image for gender model (assuming 100x100 input)
-            image_array = self._preprocess_image(image_bytes, (100, 100))
+            # Preprocess image for gender model (assuming 224x224 input)
+            image_array = self._preprocess_image(image_bytes, (224, 224))
             
             # Run prediction
             prediction = self.gender_model.predict(image_array, verbose=0)
@@ -216,10 +205,13 @@ class FaceManager:
         """
         predictions = {}
         
-        for model_name, model in self.pcos_models.items():
+        for model_name, model_data in self.pcos_models.items():
             try:
-                # Get appropriate input size for this model
-                input_size = self._get_input_size(model_name)
+                model = model_data["model"]
+                config = model_data["config"]
+                
+                # Get input size from config
+                input_size = tuple(config["input_size"])
                 
                 # Preprocess image
                 image_array = self._preprocess_image(image_bytes, input_size)
@@ -256,7 +248,7 @@ class FaceManager:
             Dictionary with complete face analysis results
         """
         # Validate uploaded file
-        image_bytes = await validate_image(file)
+        image_bytes = await validate_image(file, max_mb=settings.MAX_UPLOAD_MB)
         
         # Generate unique filename and save
         file_id = str(uuid.uuid4())[:8]
@@ -275,27 +267,51 @@ class FaceManager:
             
             # Initialize result structure
             result = {
-                "modality": "face",
+                "face_img": f"/static/uploads/{filename}",
                 "gender": gender_result,
-                "per_model": {},
-                "ensemble": {},
-                "warnings": []
+                "face_scores": [],
+                "face_pred": None,
+                "face_risk": "unknown"
             }
             
             # Check if we should skip PCOS analysis for males
             if gender_result["label"] == "male":
-                result["warnings"].append("Face appears male; skipping PCOS inference.")
+                result["face_pred"] = "Male face detected; PCOS face analysis skipped"
+                result["face_scores"] = []
+                result["face_risk"] = "unknown"
                 return result
             
             # Run PCOS prediction for females
             if gender_result["label"] == "female":
                 pcos_predictions = await self.predict_pcos(image_bytes)
-                result["per_model"] = pcos_predictions
                 
-                # Run ensemble if we have predictions
                 if pcos_predictions:
-                    ensemble_result = self.ensemble_manager.combine_face_models(pcos_predictions)
-                    result["ensemble"] = ensemble_result
+                    # Extract weights for ensemble
+                    weights = {name: config["weight"] for name, config in settings.FACE_PCOS_MODELS.items()}
+                    
+                    # Run ensemble
+                    ensemble_result = self.ensemble_manager.combine_face_models(pcos_predictions, weights)
+                    final_score = ensemble_result["score"]
+                    
+                    # Convert predictions to list for face_scores
+                    result["face_scores"] = [float(score) for score in pcos_predictions.values()]
+                    
+                    # Determine prediction label
+                    if final_score >= settings.RISK_HIGH_THRESHOLD:
+                        result["face_pred"] = "PCOS symptoms detected in facial analysis"
+                        result["face_risk"] = "high"
+                    elif final_score >= settings.RISK_LOW_THRESHOLD:
+                        result["face_pred"] = "Moderate PCOS indicators in facial analysis"
+                        result["face_risk"] = "moderate"
+                    else:
+                        result["face_pred"] = "No significant PCOS indicators in facial analysis"
+                        result["face_risk"] = "low"
+                    
+                    result["ensemble_score"] = final_score
+                else:
+                    result["face_pred"] = "No PCOS models available for analysis"
+                    result["face_scores"] = []
+                    result["face_risk"] = "unknown"
             
             return result
             

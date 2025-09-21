@@ -25,9 +25,10 @@ try:
     YOLO_AVAILABLE = True
 except ImportError:
     YOLO_AVAILABLE = False
+    logger = logging.getLogger(__name__)
     logger.warning("Ultralytics YOLO not available")
 
-from config import settings, XRAY_MODELS_DIR, UPLOADS_DIR
+from config import settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR
 from utils.validators import validate_image, get_safe_filename
 from ensemble import EnsembleManager
 
@@ -50,10 +51,8 @@ class XrayManager:
         
         # Model status tracking
         self.model_status = {
-            "yolo_v8": {"status": "not_loaded", "file_exists": False, "path": None, "error": None},
-            "xray_vgg16": {"status": "not_loaded", "file_exists": False, "path": None, "error": None},
-            "xray_resnet50": {"status": "not_loaded", "file_exists": False, "path": None, "error": None},
-            "xray_detector_158": {"status": "not_loaded", "file_exists": False, "path": None, "error": None},
+            "yolo": {"loaded": False, "available": False, "error": None},
+            "xray": {"loaded": False, "available": False, "error": None}
         }
         
         self._load_models()
@@ -74,54 +73,54 @@ class XrayManager:
     def _load_yolo_model(self) -> None:
         """Load YOLO object detection model"""
         if not YOLO_AVAILABLE:
-            self.model_status["yolo_v8"]["error"] = "Ultralytics not available"
+            self.model_status["yolo"]["error"] = "Ultralytics not available"
             return
             
-        yolo_path = XRAY_MODELS_DIR / settings.YOLO_MODEL
+        yolo_path = YOLO_MODELS_DIR / settings.YOLO_MODEL
         
-        self.model_status["yolo_v8"]["file_exists"] = yolo_path.exists()
-        self.model_status["yolo_v8"]["path"] = str(yolo_path)
+        self.model_status["yolo"]["available"] = yolo_path.exists()
         
         try:
             if yolo_path.exists():
                 self.yolo_model = YOLO(str(yolo_path))
                 self.can_detect_objects = True
-                
-                self.model_status["yolo_v8"]["status"] = "loaded"
+                self.model_status["yolo"]["loaded"] = True
                 logger.info(f"Loaded YOLO model: {yolo_path}")
             else:
                 logger.warning(f"YOLO model not found: {yolo_path}")
-                self.model_status["yolo_v8"]["error"] = "File not found"
+                self.model_status["yolo"]["error"] = "File not found"
                 
         except Exception as e:
             logger.error(f"Failed to load YOLO model: {str(e)}")
-            self.model_status["yolo_v8"]["status"] = "error"
-            self.model_status["yolo_v8"]["error"] = str(e)
+            self.model_status["yolo"]["error"] = str(e)
     
     def _load_pcos_models(self) -> None:
         """Load PCOS classification models"""
-        for model_name, filename in settings.XRAY_PCOS_MODELS.items():
-            model_path = XRAY_MODELS_DIR / filename
-            status_key = f"xray_{model_name}"
-            
-            self.model_status[status_key]["file_exists"] = model_path.exists()
-            self.model_status[status_key]["path"] = str(model_path)
+        loaded_count = 0
+        
+        for model_name, model_config in settings.XRAY_PCOS_MODELS.items():
+            model_path = XRAY_MODELS_DIR / model_config["path"]
             
             try:
                 if model_path.exists():
                     model = tf.keras.models.load_model(str(model_path), compile=False)
-                    self.pcos_models[model_name] = model
-                    
-                    self.model_status[status_key]["status"] = "loaded"
+                    self.pcos_models[model_name] = {
+                        "model": model,
+                        "config": model_config
+                    }
+                    loaded_count += 1
                     logger.info(f"Loaded PCOS model {model_name}: {model_path}")
                 else:
                     logger.warning(f"PCOS model {model_name} not found: {model_path}")
-                    self.model_status[status_key]["error"] = "File not found"
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
-                self.model_status[status_key]["status"] = "error"
-                self.model_status[status_key]["error"] = str(e)
+        
+        self.model_status["xray"]["loaded"] = loaded_count > 0
+        self.model_status["xray"]["available"] = any(
+            (XRAY_MODELS_DIR / config["path"]).exists() 
+            for config in settings.XRAY_PCOS_MODELS.values()
+        )
     
     def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
         """
@@ -187,7 +186,7 @@ class XrayManager:
                     boxes = result.boxes
                     for i in range(len(boxes)):
                         detection = {
-                            "box": boxes.xyxy[i].tolist(),  # [x1, y1, x2, y2]
+                            "box": [float(x) for x in boxes.xyxy[i].tolist()],  # [x1, y1, x2, y2]
                             "conf": float(boxes.conf[i]),
                             "label": result.names[int(boxes.cls[i])]
                         }
@@ -235,10 +234,16 @@ class XrayManager:
             roi.save(roi_bytes, format='JPEG')
             roi_bytes = roi_bytes.getvalue()
             
-            for model_name, model in self.pcos_models.items():
+            for model_name, model_data in self.pcos_models.items():
                 try:
+                    model = model_data["model"]
+                    config = model_data["config"]
+                    
+                    # Get input size from config
+                    input_size = tuple(config["input_size"])
+                    
                     # Preprocess ROI
-                    roi_array = self._preprocess_image(roi_bytes, (224, 224))
+                    roi_array = self._preprocess_image(roi_bytes, input_size)
                     
                     # Run prediction
                     prediction = model.predict(roi_array, verbose=0)
@@ -275,10 +280,16 @@ class XrayManager:
         """
         predictions = {}
         
-        for model_name, model in self.pcos_models.items():
+        for model_name, model_data in self.pcos_models.items():
             try:
+                model = model_data["model"]
+                config = model_data["config"]
+                
+                # Get input size from config
+                input_size = tuple(config["input_size"])
+                
                 # Preprocess full image
-                image_array = self._preprocess_image(image_bytes, (224, 224))
+                image_array = self._preprocess_image(image_bytes, input_size)
                 
                 # Run prediction
                 prediction = model.predict(image_array, verbose=0)
@@ -311,7 +322,7 @@ class XrayManager:
             Dictionary with complete X-ray analysis results
         """
         # Validate uploaded file
-        image_bytes = await validate_image(file)
+        image_bytes = await validate_image(file, max_mb=settings.MAX_UPLOAD_MB)
         
         # Generate unique filename and save
         file_id = str(uuid.uuid4())[:8]
@@ -330,40 +341,29 @@ class XrayManager:
             
             # Initialize result structure
             result = {
-                "modality": "xray",
-                "detections": detections,
-                "per_roi": [],
-                "yolo_vis_url": yolo_vis_url,
-                "per_model": {},
-                "ensemble": {},
-                "warnings": []
+                "xray_img": f"/static/uploads/{filename}",
+                "yolo_vis": yolo_vis_url,
+                "found_labels": [],
+                "xray_pred": None,
+                "xray_risk": "unknown"
             }
+            
+            # Extract found labels from detections
+            if detections:
+                result["found_labels"] = [det["label"] for det in detections]
             
             # Process ROIs if detections found
             if detections:
-                roi_results = []
                 all_roi_predictions = {}
                 
-                for i, detection in enumerate(detections):
+                for detection in detections:
                     roi_predictions = await self.predict_pcos_roi(image_bytes, detection["box"])
                     
-                    if roi_predictions:
-                        roi_ensemble = self.ensemble_manager.combine_xray_models(roi_predictions)
-                        
-                        roi_result = {
-                            "roi_id": i,
-                            "per_model": roi_predictions,
-                            "ensemble": roi_ensemble
-                        }
-                        roi_results.append(roi_result)
-                        
-                        # Accumulate predictions for overall ensemble
-                        for model_name, score in roi_predictions.items():
-                            if model_name not in all_roi_predictions:
-                                all_roi_predictions[model_name] = []
-                            all_roi_predictions[model_name].append(score)
-                
-                result["per_roi"] = roi_results
+                    # Accumulate predictions for overall ensemble
+                    for model_name, score in roi_predictions.items():
+                        if model_name not in all_roi_predictions:
+                            all_roi_predictions[model_name] = []
+                        all_roi_predictions[model_name].append(score)
                 
                 # Average ROI predictions for overall score
                 if all_roi_predictions:
@@ -371,18 +371,55 @@ class XrayManager:
                         model_name: sum(scores) / len(scores)
                         for model_name, scores in all_roi_predictions.items()
                     }
-                    result["per_model"] = averaged_predictions
-                    result["ensemble"] = self.ensemble_manager.combine_xray_models(averaged_predictions)
+                    
+                    # Extract weights for ensemble
+                    weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
+                    
+                    # Run ensemble
+                    ensemble_result = self.ensemble_manager.combine_xray_models(averaged_predictions, weights)
+                    final_score = ensemble_result["score"]
+                    
+                    # Determine prediction label and risk
+                    if final_score >= settings.RISK_HIGH_THRESHOLD:
+                        result["xray_pred"] = "PCOS symptoms detected in X-ray"
+                        result["xray_risk"] = "high"
+                    elif final_score >= settings.RISK_LOW_THRESHOLD:
+                        result["xray_pred"] = "Moderate PCOS indicators in X-ray"
+                        result["xray_risk"] = "moderate"
+                    else:
+                        result["xray_pred"] = "No PCOS symptoms detected in X-ray"
+                        result["xray_risk"] = "low"
+                    
+                    result["ensemble_score"] = final_score
+                else:
+                    result["xray_pred"] = "No PCOS models available for ROI analysis"
             
             else:
                 # No detections - classify full image
                 full_image_predictions = await self.predict_pcos_full_image(image_bytes)
-                result["per_model"] = full_image_predictions
                 
                 if full_image_predictions:
-                    result["ensemble"] = self.ensemble_manager.combine_xray_models(full_image_predictions)
+                    # Extract weights for ensemble
+                    weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
+                    
+                    # Run ensemble
+                    ensemble_result = self.ensemble_manager.combine_xray_models(full_image_predictions, weights)
+                    final_score = ensemble_result["score"]
+                    
+                    # Determine prediction label and risk
+                    if final_score >= settings.RISK_HIGH_THRESHOLD:
+                        result["xray_pred"] = "PCOS symptoms detected in X-ray"
+                        result["xray_risk"] = "high"
+                    elif final_score >= settings.RISK_LOW_THRESHOLD:
+                        result["xray_pred"] = "Moderate PCOS indicators in X-ray"
+                        result["xray_risk"] = "moderate"
+                    else:
+                        result["xray_pred"] = "No PCOS symptoms detected in X-ray"
+                        result["xray_risk"] = "low"
+                    
+                    result["ensemble_score"] = final_score
                 else:
-                    result["warnings"].append("No PCOS models available for classification")
+                    result["xray_pred"] = "No PCOS models available for analysis"
             
             return result
             

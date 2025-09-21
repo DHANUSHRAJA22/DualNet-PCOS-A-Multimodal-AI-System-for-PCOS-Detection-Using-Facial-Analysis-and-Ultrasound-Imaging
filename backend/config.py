@@ -15,6 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 FACE_MODELS_DIR = MODELS_DIR / "face"
 XRAY_MODELS_DIR = MODELS_DIR / "xray"
+YOLO_MODELS_DIR = MODELS_DIR / "yolo"
 STATIC_DIR = BASE_DIR / "static"
 UPLOADS_DIR = STATIC_DIR / "uploads"
 
@@ -23,34 +24,49 @@ class Settings(BaseModel):
     
     # Server configuration
     HOST: str = os.getenv("HOST", "127.0.0.1")
-    PORT: int = int(os.getenv("PORT", "8000"))
+    PORT: int = int(os.getenv("PORT", "5000"))
     DEBUG: bool = os.getenv("DEBUG", "true").lower() == "true"
     
     # CORS configuration
     ALLOWED_ORIGINS: List[str] = [
-        "http://localhost:8080",
-        "http://127.0.0.1:8080", 
         "http://localhost:5173",
-        "http://127.0.0.1:5173"
+        "http://127.0.0.1:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080"
     ]
     
-    # File upload limits
-    MAX_FILE_SIZE: int = 5 * 1024 * 1024  # 5MB
+    # File upload configuration
+    MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "5"))
     ALLOWED_MIME_TYPES: List[str] = ["image/jpeg", "image/png", "image/webp"]
+    STATIC_TTL_SECONDS: int = int(os.getenv("STATIC_TTL_SECONDS", "3600"))
     
     # Model filenames (DO NOT CHANGE - these match your provided files)
     GENDER_MODEL: str = "gender_classifier.h5"
     
-    FACE_PCOS_MODELS: Dict[str, str] = {
-        "vgg16": "pcos_vgg16.h5",
-        "resnet50": "pcos_resnet50.h5",
-        "efficientnet_b0": "pcos_efficientnet_b0.h5",
+    FACE_PCOS_MODELS: Dict[str, Dict] = {
+        "vgg16": {
+            "path": "face_model_A.h5",
+            "input_size": [224, 224],
+            "weight": 0.5
+        },
+        "resnet50": {
+            "path": "face_model_B.h5", 
+            "input_size": [224, 224],
+            "weight": 0.5
+        }
     }
     
-    XRAY_PCOS_MODELS: Dict[str, str] = {
-        "vgg16": "pcos_vgg16.h5",
-        "resnet50": "pcos_resnet50.h5",
-        "detector_158": "pcos_detector_158.h5",
+    XRAY_PCOS_MODELS: Dict[str, Dict] = {
+        "xray_a": {
+            "path": "xray_model_A.h5",
+            "input_size": [224, 224],
+            "weight": 0.5
+        },
+        "xray_b": {
+            "path": "xray_model_B.h5",
+            "input_size": [224, 224], 
+            "weight": 0.5
+        }
     }
     
     YOLO_MODEL: str = "bestv8.pt"
@@ -73,3 +89,4 @@ settings = Settings()
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 FACE_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 XRAY_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+YOLO_MODELS_DIR.mkdir(parents=True, exist_ok=True)

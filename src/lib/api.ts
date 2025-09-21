@@ -65,7 +65,7 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
 
 export async function pingHealth(): Promise<HealthStatus> {
   const apiBase = resolveApiBase()
-  const url = apiBase ? `${apiBase}/health` : '/health'
+  const url = withBase('/health')
   
   try {
     const response = await fetchWithTimeout(url, {}, 5000)
@@ -84,8 +84,7 @@ export async function pingHealth(): Promise<HealthStatus> {
 }
 
 export async function postPredict(formData: FormData): Promise<PredictionResponse> {
-  const apiBase = resolveApiBase()
-  const url = apiBase ? `${apiBase}/predict` : '/predict'
+  const url = withBase('/predict')
   
   const response = await fetchWithTimeout(url, {
     method: 'POST',

@@ -11,6 +11,7 @@ Version: 1.0.0
 import os
 import logging
 import traceback
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any
 import httpx
@@ -22,15 +23,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import settings, STATIC_DIR
-from schemas import (
-    HealthResponse, PredictionResponse, LegacyPredictionResponse, 
-    ErrorResponse, ModelStatus
-)
+from config import settings, STATIC_DIR, UPLOADS_DIR
 from managers.face_manager import FaceManager
 from managers.xray_manager import XrayManager
 from ensemble import EnsembleManager
-from utils.validators import ValidationError, validate_proxy_url
+from utils.validators import validate_request_files, validate_proxy_url
 
 # Configure logging
 logging.basicConfig(
@@ -68,46 +65,81 @@ ensemble_manager = EnsembleManager()
 # Track startup time
 startup_time = datetime.now()
 
+# Response models
+class HealthResponse(BaseModel):
+    status: str
+    models: Dict[str, bool]
+
+class PredictionResponse(BaseModel):
+    ok: bool
+    face_pred: Optional[str] = None
+    face_scores: Optional[list] = None
+    face_img: Optional[str] = None
+    face_risk: Optional[str] = None
+    xray_pred: Optional[str] = None
+    xray_img: Optional[str] = None
+    yolo_vis: Optional[str] = None
+    found_labels: Optional[list] = None
+    xray_risk: Optional[str] = None
+    combined: Optional[str] = None
+    overall_risk: Optional[str] = None
+    message: str = "ok"
+
+def cleanup_old_files():
+    """Clean up old uploaded files"""
+    try:
+        current_time = time.time()
+        max_age = settings.STATIC_TTL_SECONDS
+        
+        if not UPLOADS_DIR.exists():
+            return
+            
+        for file_path in UPLOADS_DIR.iterdir():
+            if file_path.is_file():
+                file_age = current_time - file_path.stat().st_mtime
+                if file_age > max_age:
+                    try:
+                        file_path.unlink()
+                        logger.debug(f"Cleaned up old file: {file_path.name}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove old file {file_path.name}: {str(e)}")
+                        
+    except Exception as e:
+        logger.error(f"File cleanup failed: {str(e)}")
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """
-    Comprehensive health check endpoint
+    Health check endpoint with model status
     
-    Returns detailed status of all models including load status,
-    file paths, and any error messages.
+    Returns detailed status of all models including load status.
+    Never crashes on missing models - reports availability instead.
     
     Returns:
-        HealthResponse: Complete system health information
+        HealthResponse: System health information
     """
     try:
-        # Collect model status from all managers
-        all_models = {}
-        all_models.update(face_manager.get_model_status())
-        all_models.update(xray_manager.get_model_status())
+        face_status = face_manager.get_model_status()
+        xray_status = xray_manager.get_model_status()
         
-        # Convert to ModelStatus objects
         models_status = {
-            name: ModelStatus(**status) for name, status in all_models.items()
+            "gender": face_status.get("gender", {}).get("loaded", False),
+            "face": face_status.get("face", {}).get("loaded", False),
+            "yolo": xray_status.get("yolo", {}).get("loaded", False),
+            "xray": xray_status.get("xray", {}).get("loaded", False)
         }
         
-        # Calculate overall statistics
-        total_configured = len(models_status)
-        total_loaded = sum(1 for status in models_status.values() if status.status == "loaded")
-        
         # Determine overall status
-        if total_loaded == 0:
+        loaded_count = sum(models_status.values())
+        if loaded_count == 0:
             overall_status = "unhealthy"
-        elif total_loaded < total_configured:
+        elif loaded_count < len(models_status):
             overall_status = "degraded"
         else:
-            overall_status = "healthy"
+            overall_status = "ok"
         
         return HealthResponse(
-            ok=True,
-            success=True,
-            overall_status=overall_status,
-            total_models_configured=total_configured,
-            total_models_loaded=total_loaded,
+            status=overall_status,
             models=models_status
         )
         
@@ -116,104 +148,100 @@ async def health_check():
         logger.error(traceback.format_exc())
         
         return HealthResponse(
-            ok=False,
-            success=False,
-            overall_status="error",
-            total_models_configured=0,
-            total_models_loaded=0,
-            models={}
+            status="error",
+            models={
+                "gender": False,
+                "face": False,
+                "yolo": False,
+                "xray": False
+            }
         )
 
 @app.post("/predict", response_model=PredictionResponse)
-async def predict_rich(
+async def predict(
     face_img: Optional[UploadFile] = File(None),
-    xray_img: Optional[UploadFile] = File(None),
-    threshold: float = Query(0.5, ge=0.0, le=1.0)
+    xray_img: Optional[UploadFile] = File(None)
 ):
     """
-    Rich prediction endpoint with detailed ensemble results
+    Main prediction endpoint with rich response format
     
     Accepts facial images and/or X-ray images for comprehensive PCOS analysis
     using ensemble deep learning models.
     
     Args:
         face_img: Optional facial image file (JPEG/PNG/WebP, max 5MB)
-        xray_img: Optional X-ray image file (JPEG/PNG/WebP, max 5MB)  
-        threshold: Confidence threshold for predictions (0.0-1.0)
+        xray_img: Optional X-ray image file (JPEG/PNG/WebP, max 5MB)
         
     Returns:
-        PredictionResponse: Detailed analysis results with ensemble predictions
+        PredictionResponse: Detailed analysis results
         
     Raises:
         HTTPException: 400 for validation errors, 500 for processing errors
     """
     start_time = datetime.now()
     
-    if not face_img and not xray_img:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one image (face_img or xray_img) must be provided"
-        )
+    # Clean up old files
+    cleanup_old_files()
+    
+    # Validate request
+    validate_request_files(face_img, xray_img)
     
     try:
-        modalities = []
-        warnings = []
-        debug_info = {}
+        result = PredictionResponse(ok=True)
+        face_score = None
+        xray_score = None
         
         # Process face image if provided
         if face_img:
-            logger.info("Processing face image for rich prediction")
+            logger.info("Processing face image")
             try:
                 face_result = await face_manager.process_face_image(face_img)
-                modalities.append(face_result)
-                debug_info["face_img_url"] = f"/static/uploads/face-{face_img.filename}"
+                
+                result.face_pred = face_result.get("face_pred")
+                result.face_scores = face_result.get("face_scores", [])
+                result.face_img = face_result.get("face_img")
+                result.face_risk = face_result.get("face_risk", "unknown")
+                
+                # Get ensemble score for final combination
+                face_score = face_result.get("ensemble_score")
+                
             except Exception as e:
                 logger.error(f"Face processing failed: {str(e)}")
-                warnings.append(f"Face analysis failed: {str(e)}")
+                result.face_pred = f"Face analysis failed: {str(e)}"
+                result.face_risk = "unknown"
         
         # Process X-ray image if provided
         if xray_img:
-            logger.info("Processing X-ray image for rich prediction")
+            logger.info("Processing X-ray image")
             try:
                 xray_result = await xray_manager.process_xray_image(xray_img)
-                modalities.append(xray_result)
-                debug_info["xray_img_url"] = f"/static/uploads/xray-{xray_img.filename}"
+                
+                result.xray_pred = xray_result.get("xray_pred")
+                result.xray_img = xray_result.get("xray_img")
+                result.yolo_vis = xray_result.get("yolo_vis")
+                result.found_labels = xray_result.get("found_labels", [])
+                result.xray_risk = xray_result.get("xray_risk", "unknown")
+                
+                # Get ensemble score for final combination
+                xray_score = xray_result.get("ensemble_score")
+                
             except Exception as e:
                 logger.error(f"X-ray processing failed: {str(e)}")
-                warnings.append(f"X-ray analysis failed: {str(e)}")
-        
-        # Combine modality results
-        face_ensemble = None
-        xray_ensemble = None
-        
-        for modality in modalities:
-            if modality["modality"] == "face" and modality.get("ensemble"):
-                face_ensemble = modality["ensemble"]
-            elif modality["modality"] == "xray" and modality.get("ensemble"):
-                xray_ensemble = modality["ensemble"]
+                result.xray_pred = f"X-ray analysis failed: {str(e)}"
+                result.xray_risk = "unknown"
         
         # Generate final combined result
-        final_result = ensemble_manager.combine_modalities(face_ensemble, xray_ensemble)
+        final_result = ensemble_manager.combine_modalities(face_score, xray_score)
+        result.overall_risk = final_result["overall_risk"]
+        result.combined = final_result["combined"]
         
-        # Convert final result to expected format
-        final_formatted = {
-            "risk_score": final_result["risk_score"],
-            "risk_label": "PCOS-positive" if final_result["risk_score"] >= 0.5 else "PCOS-negative"
-        }
+        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        logger.info(f"Prediction completed in {processing_time:.2f}ms")
         
-        return PredictionResponse(
-            modalities=modalities,
-            final=final_formatted,
-            warnings=warnings,
-            debug=debug_info
-        )
+        return result
         
-    except ValidationError as e:
-        logger.warning(f"Validation error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Prediction failed: {str(e)}")
         logger.error(traceback.format_exc())
@@ -222,7 +250,7 @@ async def predict_rich(
             detail=f"Internal server error: {str(e)}"
         )
 
-@app.post("/predict-legacy", response_model=LegacyPredictionResponse)
+@app.post("/predict-legacy", response_model=PredictionResponse)
 async def predict_legacy(
     face_img: Optional[UploadFile] = File(None),
     xray_img: Optional[UploadFile] = File(None)
@@ -238,96 +266,10 @@ async def predict_legacy(
         xray_img: Optional X-ray image file
         
     Returns:
-        LegacyPredictionResponse: Results in legacy format
+        PredictionResponse: Results in legacy format
     """
-    if not face_img and not xray_img:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one image must be provided"
-        )
-    
-    try:
-        # Initialize legacy response
-        response = LegacyPredictionResponse()
-        
-        # Process face image
-        if face_img:
-            try:
-                face_result = await face_manager.process_face_image(face_img)
-                
-                # Convert to legacy format
-                if face_result.get("ensemble") and face_result["ensemble"].get("score") is not None:
-                    ensemble_score = face_result["ensemble"]["score"]
-                    response.face_pred = "pcos" if ensemble_score > 0.5 else "non_pcos"
-                    response.face_scores = list(face_result["per_model"].values()) if face_result.get("per_model") else []
-                    response.face_risk = ensemble_manager._classify_risk(ensemble_score)
-                elif face_result.get("warnings") and "male" in str(face_result["warnings"]).lower():
-                    response.face_pred = None  # Male detected
-                    response.face_scores = []
-                    response.face_risk = "unknown"
-                
-                # Always provide image URL
-                response.face_img = f"/static/uploads/face-{face_img.filename}"
-                
-            except Exception as e:
-                logger.error(f"Legacy face processing failed: {str(e)}")
-                response.message = f"Face analysis failed: {str(e)}"
-        
-        # Process X-ray image
-        if xray_img:
-            try:
-                xray_result = await xray_manager.process_xray_image(xray_img)
-                
-                # Convert to legacy format
-                if xray_result.get("ensemble") and xray_result["ensemble"].get("score") is not None:
-                    ensemble_score = xray_result["ensemble"]["score"]
-                    response.xray_pred = "pcos" if ensemble_score > 0.5 else "normal"
-                    response.xray_risk = ensemble_manager._classify_risk(ensemble_score)
-                    
-                    # Extract found labels from detections
-                    if xray_result.get("detections"):
-                        response.found_labels = [det["label"] for det in xray_result["detections"]]
-                    
-                    # YOLO visualization
-                    if xray_result.get("yolo_vis_url"):
-                        response.yolo_vis = xray_result["yolo_vis_url"]
-                
-                # Always provide image URL
-                response.xray_img = f"/static/uploads/xray-{xray_img.filename}"
-                
-            except Exception as e:
-                logger.error(f"Legacy X-ray processing failed: {str(e)}")
-                response.message = f"X-ray analysis failed: {str(e)}"
-        
-        # Generate combined assessment
-        risk_scores = []
-        if response.face_pred == "pcos":
-            risk_scores.append(0.7)  # Approximate from face
-        elif response.face_pred == "non_pcos":
-            risk_scores.append(0.3)
-            
-        if response.xray_pred == "pcos":
-            risk_scores.append(0.7)  # Approximate from X-ray
-        elif response.xray_pred == "normal":
-            risk_scores.append(0.3)
-        
-        if risk_scores:
-            combined_score = sum(risk_scores) / len(risk_scores)
-            response.overall_risk = ensemble_manager._classify_risk(combined_score)
-            response.combined = f"Final risk score {combined_score:.2f} → {'PCOS-positive' if combined_score > 0.5 else 'PCOS-negative'}"
-        else:
-            response.overall_risk = "unknown"
-            response.combined = "Insufficient data for combined assessment"
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Legacy prediction failed: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Analysis failed: {str(e)}"
-        )
+    # Use the same logic as /predict
+    return await predict(face_img, xray_img)
 
 @app.get("/img-proxy")
 async def image_proxy(url: str = Query(..., description="Image URL to proxy")):
@@ -390,10 +332,11 @@ async def global_exception_handler(request, exc):
     
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=ErrorResponse(
-            error="Internal Server Error",
-            message="An unexpected error occurred"
-        ).dict()
+        content={
+            "ok": False,
+            "message": "Internal server error",
+            "detail": str(exc) if settings.DEBUG else "An unexpected error occurred"
+        }
     )
 
 if __name__ == "__main__":
@@ -407,7 +350,7 @@ if __name__ == "__main__":
     - Enable access logs and structured logging
     
     Example production command:
-    uvicorn app:app --host 0.0.0.0 --port 8000 --workers 4
+    uvicorn app:app --host 0.0.0.0 --port 5000 --workers 4
     """
     import uvicorn
     
