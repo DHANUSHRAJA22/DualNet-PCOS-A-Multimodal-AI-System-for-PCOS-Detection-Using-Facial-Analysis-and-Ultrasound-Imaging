@@ -359,21 +359,57 @@ class XrayManager:
                 "yolo_vis": yolo_vis_url,
                 "found_labels": [],
                 "xray_pred": None,
-                "xray_risk": "unknown"
+                "xray_risk": "unknown",
+                "detections": [],
+                "per_roi": [],
+                "per_model": {},
+                "ensemble": None,
+                "models_used": []
             }
             
             # Extract found labels from detections
             if detections:
                 result["found_labels"] = [det["label"] for det in detections]
+                
+                # Convert detections to schema format
+                from schemas import Detection
+                result["detections"] = [
+                    Detection(
+                        box=det["box"],
+                        conf=det["conf"],
+                        label=det["label"]
+                    ) for det in detections
+                ]
             
             # Process ROIs if detections found
             if detections:
                 roi_predictions_list = []
+                roi_results = []
                 
-                for detection in detections:
+                for roi_id, detection in enumerate(detections):
                     roi_predictions = await self.predict_pcos_roi(image_bytes, detection["box"])
                     if roi_predictions:
                         roi_predictions_list.append(roi_predictions)
+                        
+                        # Create ROI result with ensemble
+                        weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
+                        roi_ensemble = self.ensemble_manager.combine_xray_models(roi_predictions, weights)
+                        
+                        from schemas import ROIResult, EnsembleResult
+                        roi_result = ROIResult(
+                            roi_id=roi_id,
+                            box=detection["box"],
+                            per_model=roi_predictions,
+                            ensemble=EnsembleResult(
+                                method=roi_ensemble["method"],
+                                score=roi_ensemble["score"],
+                                models_used=roi_ensemble["models_used"],
+                                weights_used=roi_ensemble.get("weights_used")
+                            )
+                        )
+                        roi_results.append(roi_result)
+                
+                result["per_roi"] = roi_results
                 
                 # Ensemble ROI predictions
                 if roi_predictions_list:
@@ -388,12 +424,25 @@ class XrayManager:
                         if scores:
                             averaged_predictions[model_name] = sum(scores) / len(scores)
                     
+                    # Store per-model predictions
+                    result["per_model"] = averaged_predictions
+                    result["models_used"] = list(averaged_predictions.keys())
+                    
                     # Extract weights for ensemble
                     weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
                     
                     # Run ensemble
                     ensemble_result = self.ensemble_manager.combine_xray_models(averaged_predictions, weights)
                     final_score = ensemble_result["score"]
+                    
+                    # Store ensemble metadata
+                    from schemas import EnsembleResult
+                    result["ensemble"] = EnsembleResult(
+                        method=ensemble_result["method"],
+                        score=final_score,
+                        models_used=ensemble_result["models_used"],
+                        weights_used=ensemble_result.get("weights_used")
+                    )
                     
                     # Determine prediction label and risk
                     if final_score >= settings.RISK_HIGH_THRESHOLD:
@@ -415,12 +464,25 @@ class XrayManager:
                 full_image_predictions = await self.predict_pcos_full_image(image_bytes)
                 
                 if full_image_predictions:
+                    # Store per-model predictions
+                    result["per_model"] = full_image_predictions
+                    result["models_used"] = list(full_image_predictions.keys())
+                    
                     # Extract weights for ensemble
                     weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
                     
                     # Run ensemble
                     ensemble_result = self.ensemble_manager.combine_xray_models(full_image_predictions, weights)
                     final_score = ensemble_result["score"]
+                    
+                    # Store ensemble metadata
+                    from schemas import EnsembleResult
+                    result["ensemble"] = EnsembleResult(
+                        method=ensemble_result["method"],
+                        score=final_score,
+                        models_used=ensemble_result["models_used"],
+                        weights_used=ensemble_result.get("weights_used")
+                    )
                     
                     # Determine prediction label and risk
                     if final_score >= settings.RISK_HIGH_THRESHOLD:

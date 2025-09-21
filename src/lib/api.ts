@@ -1,4 +1,30 @@
-// New structured response format
+// Enhanced structured response format with per-model and ROI details
+export interface GenderPrediction {
+  male: number
+  female: number
+  label: string
+}
+
+export interface EnsembleResult {
+  method: string
+  score: number
+  models_used: number
+  weights_used?: Record<string, number>
+}
+
+export interface Detection {
+  box: number[] // [x1, y1, x2, y2]
+  conf: number
+  label: string
+}
+
+export interface ROIResult {
+  roi_id: number
+  box: number[]
+  per_model: Record<string, number>
+  ensemble: EnsembleResult
+}
+
 export interface ModalityResult {
   type: string
   label: string
@@ -7,6 +33,17 @@ export interface ModalityResult {
   original_img?: string
   visualization?: string
   found_labels?: string[]
+  
+  // Face-specific fields
+  gender?: GenderPrediction
+  
+  // X-ray-specific fields
+  detections?: Detection[]
+  per_roi?: ROIResult[]
+  
+  // Common fields
+  per_model?: Record<string, number>
+  ensemble?: EnsembleResult
 }
 
 export interface FinalResult {
@@ -21,6 +58,7 @@ export interface StructuredPredictionResponse {
   final: FinalResult
   warnings: string[]
   processing_time_ms: number
+  debug: Record<string, any>
 }
 
 // Legacy response format for backward compatibility
@@ -43,14 +81,18 @@ export interface LegacyPredictionResponse {
 // Union type for responses
 export type PredictionResponse = StructuredPredictionResponse | LegacyPredictionResponse
 
+export interface ModelStatus {
+  status: string
+  file_exists: boolean
+  lazy_loadable: boolean
+  path?: string
+  error?: string
+  version?: string
+}
+
 export interface EnhancedHealthResponse {
   status: string
-  models: Record<string, {
-    loaded: boolean
-    available: boolean
-    lazy_loadable: boolean
-    error?: string
-  }>
+  models: Record<string, ModelStatus>
   uptime_seconds: number
   version: string
 }

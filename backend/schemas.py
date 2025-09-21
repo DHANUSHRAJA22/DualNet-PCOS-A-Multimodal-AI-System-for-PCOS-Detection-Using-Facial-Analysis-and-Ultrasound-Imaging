@@ -13,19 +13,17 @@ class ModelStatus(BaseModel):
     """Status information for a single model"""
     status: str = Field(..., description="Model status: 'loaded', 'not_loaded', 'error'")
     file_exists: bool = Field(..., description="Whether the model file exists on disk")
+    lazy_loadable: bool = Field(..., description="Whether the model can be lazy loaded")
     path: Optional[str] = Field(None, description="Path to model file")
     error: Optional[str] = Field(None, description="Error message if failed to load")
     version: Optional[str] = Field(None, description="Model version if available")
 
-class HealthResponse(BaseModel):
+class EnhancedHealthResponse(BaseModel):
     """Health check response with detailed model status"""
-    ok: bool = Field(..., description="Overall system health status")
-    success: bool = Field(..., description="Success flag for compatibility")
-    overall_status: str = Field(..., description="System status: 'healthy', 'degraded', 'unhealthy'")
-    total_models_configured: int = Field(..., description="Total number of configured models")
-    total_models_loaded: int = Field(..., description="Number of successfully loaded models")
+    status: str = Field(..., description="System status: 'healthy', 'degraded', 'unhealthy'")
     models: Dict[str, ModelStatus] = Field(..., description="Detailed status for each model")
-    timestamp: float = Field(default_factory=lambda: datetime.now().timestamp(), description="Health check timestamp")
+    uptime_seconds: float = Field(..., description="System uptime in seconds")
+    version: str = Field(..., description="API version")
 
 class GenderPrediction(BaseModel):
     """Gender classification results"""
@@ -49,12 +47,19 @@ class Detection(BaseModel):
 class ROIResult(BaseModel):
     """Region of Interest classification results"""
     roi_id: int = Field(..., description="ROI identifier")
+    box: List[float] = Field(..., description="ROI bounding box [x1, y1, x2, y2]")
     per_model: Dict[str, float] = Field(..., description="Individual model predictions for this ROI")
     ensemble: EnsembleResult = Field(..., description="Ensemble result for this ROI")
 
 class ModalityResult(BaseModel):
     """Results for a single modality (face or X-ray)"""
-    modality: str = Field(..., description="Modality type: 'face' or 'xray'")
+    type: str = Field(..., description="Modality type: 'face' or 'xray'")
+    label: str = Field(..., description="Human-readable prediction label")
+    scores: List[float] = Field(..., description="Raw prediction scores")
+    risk: str = Field(..., description="Risk level: 'low', 'moderate', 'high', 'unknown'")
+    original_img: Optional[str] = Field(None, description="URL to original uploaded image")
+    visualization: Optional[str] = Field(None, description="URL to visualization image (X-ray only)")
+    found_labels: Optional[List[str]] = Field(None, description="Detected object labels (X-ray only)")
     
     # Face-specific fields
     gender: Optional[GenderPrediction] = Field(None, description="Gender classification (face only)")
@@ -62,7 +67,6 @@ class ModalityResult(BaseModel):
     # X-ray-specific fields
     detections: Optional[List[Detection]] = Field(None, description="YOLO detections (X-ray only)")
     per_roi: Optional[List[ROIResult]] = Field(None, description="Per-ROI results (X-ray only)")
-    yolo_vis_url: Optional[str] = Field(None, description="YOLO visualization image URL")
     
     # Common fields
     per_model: Optional[Dict[str, float]] = Field(None, description="Individual model predictions")
@@ -70,16 +74,17 @@ class ModalityResult(BaseModel):
 
 class FinalResult(BaseModel):
     """Final combined prediction results"""
-    risk_score: float = Field(..., description="Final PCOS risk score (0.0-1.0)")
-    risk_label: str = Field(..., description="Risk classification: 'PCOS-positive', 'PCOS-negative', 'unknown'")
+    overall_risk: str = Field(..., description="Overall risk level: 'low', 'moderate', 'high', 'unknown'")
+    confidence: float = Field(..., description="Overall confidence score (0.0-1.0)")
+    explanation: str = Field(..., description="Human-readable explanation of the results")
 
-class PredictionResponse(BaseModel):
+class StructuredPredictionResponse(BaseModel):
     """Rich prediction response for new frontend"""
-    api_version: str = Field(default="1.0.0", description="API version")
+    ok: bool = Field(..., description="Success status")
     modalities: List[ModalityResult] = Field(..., description="Results for each processed modality")
     final: FinalResult = Field(..., description="Final combined prediction")
     warnings: List[str] = Field(default_factory=list, description="Processing warnings")
-    message: str = Field(default="ok", description="Processing status message")
+    processing_time_ms: float = Field(..., description="Total processing time in milliseconds")
     debug: Dict[str, Any] = Field(default_factory=dict, description="Debug information")
 
 class LegacyPredictionResponse(BaseModel):

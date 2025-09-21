@@ -1,17 +1,22 @@
 import { useLocation, Navigate, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowLeft, Brain, ScanLine, CheckCircle, AlertTriangle, TrendingUp } from 'lucide-react'
+import { ArrowLeft, Brain, ScanLine, CheckCircle, AlertTriangle, TrendingUp, Eye, BarChart3 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { ResultCard } from '@/components/ResultCard'
 import { MedicalDisclaimer } from '@/components/MedicalDisclaimer'
 import { RiskGauge } from '@/components/RiskGauge'
 import { AIPerformanceMetrics } from '@/components/AIPerformanceMetrics'
 import { withBase } from '@/lib/api'
-import type { LegacyPredictionResponse } from '@/lib/api'
+import type { StructuredPredictionResponse, LegacyPredictionResponse, ModalityResult, ROIResult } from '@/lib/api'
 
 type RiskLevel = 'low' | 'moderate' | 'high' | 'unknown'
+
+function isStructuredResponse(response: any): response is StructuredPredictionResponse {
+  return response && 'modalities' in response && 'final' in response
+}
 
 function getRiskLevel(combinedResult?: string): RiskLevel {
   if (!combinedResult) return 'unknown'
@@ -63,6 +68,115 @@ function getAnalysisSummary(prediction?: string): { status: 'normal' | 'review';
   return { status: 'review', text: 'Review Needed' }
 }
 
+function PerModelBreakdown({ modality }: { modality: ModalityResult }) {
+  if (!modality.per_model || Object.keys(modality.per_model).length === 0) {
+    return null
+  }
+
+  return (
+    <Card className="border-indigo-200 bg-gradient-to-br from-indigo-50 to-purple-50">
+      <CardHeader className="pb-4">
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <BarChart3 className="h-5 w-5 text-indigo-600" />
+          Per-Model Analysis
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {Object.entries(modality.per_model).map(([modelName, score]) => (
+          <div key={modelName} className="space-y-2">
+            <div className="flex justify-between items-center">
+              <span className="font-medium capitalize text-slate-700">
+                {modelName.replace('_', ' ')}
+              </span>
+              <Badge variant="outline" className="font-mono">
+                {(score * 100).toFixed(1)}%
+              </Badge>
+            </div>
+            <div className="w-full bg-slate-200 rounded-full h-2">
+              <div
+                className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2 rounded-full transition-all duration-1000"
+                style={{ width: `${score * 100}%` }}
+              />
+            </div>
+          </div>
+        ))}
+        
+        {modality.ensemble && (
+          <div className="mt-4 pt-4 border-t border-indigo-200">
+            <div className="flex justify-between items-center mb-2">
+              <span className="font-semibold text-slate-800">Ensemble Result</span>
+              <Badge className="bg-gradient-to-r from-indigo-500 to-purple-500 text-white">
+                {(modality.ensemble.score * 100).toFixed(1)}%
+              </Badge>
+            </div>
+            <div className="text-sm text-slate-600">
+              <div>Method: {modality.ensemble.method}</div>
+              <div>Models used: {modality.ensemble.models_used}</div>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ROIBreakdown({ rois }: { rois: ROIResult[] }) {
+  if (!rois || rois.length === 0) {
+    return null
+  }
+
+  return (
+    <Card className="border-teal-200 bg-gradient-to-br from-teal-50 to-emerald-50">
+      <CardHeader className="pb-4">
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <Eye className="h-5 w-5 text-teal-600" />
+          Region of Interest Analysis
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Accordion type="single" collapsible className="space-y-2">
+          {rois.map((roi) => (
+            <AccordionItem key={roi.roi_id} value={`roi-${roi.roi_id}`} className="border border-teal-200 rounded-lg">
+              <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                <div className="flex items-center justify-between w-full mr-4">
+                  <span className="font-medium">ROI #{roi.roi_id + 1}</span>
+                  <Badge className="bg-gradient-to-r from-teal-500 to-emerald-500 text-white">
+                    {(roi.ensemble.score * 100).toFixed(1)}% Risk
+                  </Badge>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="px-4 pb-4">
+                <div className="space-y-3">
+                  <div className="text-sm text-slate-600">
+                    <strong>Bounding Box:</strong> [{roi.box.map(n => n.toFixed(0)).join(', ')}]
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <div className="font-medium text-slate-700">Model Predictions:</div>
+                    {Object.entries(roi.per_model).map(([modelName, score]) => (
+                      <div key={modelName} className="flex justify-between items-center">
+                        <span className="text-sm capitalize">{modelName.replace('_', ' ')}</span>
+                        <span className="font-mono text-sm">{(score * 100).toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  <div className="pt-2 border-t border-teal-200">
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium">Ensemble ({roi.ensemble.method})</span>
+                      <Badge variant="outline">{(roi.ensemble.score * 100).toFixed(1)}%</Badge>
+                    </div>
+                  </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          ))}
+        </Accordion>
+      </CardContent>
+    </Card>
+  )
+}
+
 const Reveal = ({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) => (
   <motion.div
     initial={{ opacity: 0, y: 20 }}
@@ -76,7 +190,7 @@ const Reveal = ({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
 export function ResultsPage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const results = location.state?.results as LegacyPredictionResponse
+  const results = location.state?.results as StructuredPredictionResponse | LegacyPredictionResponse
 
   if (!results) {
     return (
@@ -101,14 +215,56 @@ export function ResultsPage() {
     )
   }
 
-  const overallRisk = results.overall_risk as RiskLevel || getRiskLevel(results.combined)
-  const faceSummary = getAnalysisSummary(results.face_pred)
-  const xraySummary = getAnalysisSummary(results.xray_pred)
-  
-  // Calculate overall confidence from available scores
-  const overallConfidence = results.face_scores && results.face_scores.length > 0 
-    ? Math.max(...results.face_scores) 
-    : 0.75 // Default confidence if no scores available
+  // Handle both structured and legacy responses
+  let overallRisk: RiskLevel
+  let overallConfidence: number
+  let explanation: string
+  let modalities: ModalityResult[] = []
+  let processingTime: number = 0
+  let debugInfo: any = {}
+
+  if (isStructuredResponse(results)) {
+    // New structured format
+    overallRisk = results.final.overall_risk as RiskLevel
+    overallConfidence = results.final.confidence
+    explanation = results.final.explanation
+    modalities = results.modalities
+    processingTime = results.processing_time_ms
+    debugInfo = results.debug
+  } else {
+    // Legacy format
+    overallRisk = (results.overall_risk as RiskLevel) || getRiskLevel(results.combined)
+    overallConfidence = results.face_scores && results.face_scores.length > 0 
+      ? Math.max(...results.face_scores) 
+      : 0.75
+    explanation = results.combined || 'Analysis completed'
+    
+    // Convert legacy to modality format for display
+    if (results.face_pred) {
+      modalities.push({
+        type: 'face',
+        label: results.face_pred,
+        scores: results.face_scores || [],
+        risk: results.face_risk as RiskLevel || 'unknown',
+        original_img: results.face_img
+      })
+    }
+    
+    if (results.xray_pred) {
+      modalities.push({
+        type: 'xray',
+        label: results.xray_pred,
+        scores: [],
+        risk: results.xray_risk as RiskLevel || 'unknown',
+        original_img: results.xray_img,
+        visualization: results.yolo_vis,
+        found_labels: results.found_labels
+      })
+    }
+  }
+
+  const faceSummary = getAnalysisSummary(modalities.find(m => m.type === 'face')?.label)
+  const xraySummary = getAnalysisSummary(modalities.find(m => m.type === 'xray')?.label)
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50">
@@ -137,6 +293,11 @@ export function ResultsPage() {
                     <ScanLine className="h-6 w-6" />
                   </div>
                   Overall Assessment
+                  {processingTime > 0 && (
+                    <Badge variant="outline" className="ml-auto text-xs">
+                      {processingTime.toFixed(0)}ms
+                    </Badge>
+                  )}
                 </CardTitle>
               </CardHeader>
               
@@ -158,7 +319,7 @@ export function ResultsPage() {
                 
                 <div className="bg-white/70 rounded-lg p-6 border border-orange-200">
                   <p className="text-lg leading-relaxed mb-4 text-slate-700">
-                    {results.combined || 'Analysis in progress...'}
+                    {explanation}
                   </p>
                 </div>
                 
@@ -171,7 +332,7 @@ export function ResultsPage() {
                 
                 {/* Analysis Summary Chips */}
                 <div className="flex flex-wrap gap-4">
-                  {results.face_pred && (
+                  {modalities.find(m => m.type === 'face') && (
                     <motion.div 
                       className={`flex items-center gap-3 px-4 py-3 rounded-full shadow-lg border-2 ${
                         faceSummary.status === 'normal' 
@@ -191,7 +352,7 @@ export function ResultsPage() {
                     </motion.div>
                   )}
                   
-                  {results.xray_pred && (
+                  {modalities.find(m => m.type === 'xray') && (
                     <motion.div 
                       className={`flex items-center gap-3 px-4 py-3 rounded-full shadow-lg border-2 ${
                         xraySummary.status === 'normal' 
@@ -228,41 +389,45 @@ export function ResultsPage() {
 
           {/* Detailed Results */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {results.face_pred && (
+            {modalities.map((modality, index) => (
               <Reveal delay={0.1}>
                 <ResultCard
-                  title="Facial Analysis"
-                  prediction={results.face_pred}
-                  scores={results.face_scores}
-                  originalImage={results.face_img}
-                  riskLevel={results.face_risk as RiskLevel || (faceSummary.status === 'normal' ? 'low' : 'moderate')}
+                  key={modality.type}
+                  title={modality.type === 'face' ? 'Facial Analysis' : 'X-ray Analysis'}
+                  prediction={modality.label}
+                  scores={modality.scores}
+                  originalImage={modality.original_img}
+                  visualizationImage={modality.visualization}
+                  foundLabels={modality.found_labels}
+                  riskLevel={modality.risk as RiskLevel}
                   confidence={overallConfidence}
+                  modality={modality}
                 />
               </Reveal>
-            )}
+            ))}
+          </div>
 
-            {results.xray_pred && (
-              <Reveal delay={0.2}>
-                <ResultCard
-                  title="X-ray Analysis"
-                  prediction={results.xray_pred}
-                  originalImage={results.xray_img}
-                  visualizationImage={results.yolo_vis}
-                  foundLabels={results.found_labels}
-                  riskLevel={results.xray_risk as RiskLevel || (xraySummary.status === 'normal' ? 'low' : 'moderate')}
-                  confidence={overallConfidence}
-                />
+          {/* Per-Model and ROI Breakdowns */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {modalities.map((modality, index) => (
+              <Reveal key={modality.type} delay={0.3 + index * 0.1}>
+                <div className="space-y-4">
+                  <PerModelBreakdown modality={modality} />
+                  {modality.type === 'xray' && modality.per_roi && (
+                    <ROIBreakdown rois={modality.per_roi} />
+                  )}
+                </div>
               </Reveal>
-            )}
+            ))}
           </div>
 
           {/* AI Performance Metrics */}
-          <Reveal delay={0.25}>
+          <Reveal delay={0.4}>
             <AIPerformanceMetrics />
           </Reveal>
 
           {/* Actions */}
-          <Reveal delay={0.3}>
+          <Reveal delay={0.5}>
             <div className="text-center">
               <Button 
                 onClick={() => navigate('/')}
@@ -276,9 +441,25 @@ export function ResultsPage() {
           </Reveal>
 
           {/* Medical Disclaimer */}
-          <Reveal delay={0.4}>
+          <Reveal delay={0.6}>
             <MedicalDisclaimer />
           </Reveal>
+
+          {/* Debug Information (Development Only) */}
+          {debugInfo && Object.keys(debugInfo).length > 0 && (
+            <Reveal delay={0.7}>
+              <Card className="border-slate-200 bg-slate-50">
+                <CardHeader>
+                  <CardTitle className="text-lg text-slate-700">Debug Information</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <pre className="text-xs text-slate-600 overflow-auto">
+                    {JSON.stringify(debugInfo, null, 2)}
+                  </pre>
+                </CardContent>
+              </Card>
+            </Reveal>
+          )}
         </div>
       </div>
     </div>

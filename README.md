@@ -12,12 +12,17 @@ A comprehensive, production-ready full-stack application for PCOS screening anal
 - **Real-time Analysis**: Integration with FastAPI backend for AI-powered screening
 - **Smooth Animations**: Framer Motion powered interactions
 - **Backend Status**: Real-time health monitoring with API configuration
+- **Rich Results Display**: Per-model scores, ROI analysis, and ensemble details
+- **Debug Information**: Development insights and processing metadata
 
 ### Backend (FastAPI + TensorFlow + YOLO)
 - **Multi-modal Analysis**: Facial recognition + X-ray morphological analysis
 - **Gender Gating**: Male faces skip PCOS analysis with clear messaging
 - **Ensemble Models**: Multiple TensorFlow models with weighted averaging
 - **YOLO Detection**: Object detection for X-ray ROI classification
+- **Per-Model Scores**: Detailed breakdown of individual model predictions
+- **ROI Processing**: Region-of-interest analysis with bounding box details
+- **Structured Responses**: Rich API responses with comprehensive metadata
 - **Production Ready**: Comprehensive error handling, logging, and validation
 - **CORS Support**: Configured for frontend integration
 - **Static File Serving**: Automatic image serving and cleanup
@@ -115,15 +120,87 @@ export VITE_API_BASE=http://localhost:5000
 ## 📡 API Endpoints
 
 ### GET /health
-Returns model availability status
+Returns enhanced model availability status with lazy-loading capability
+
+```json
+{
+  "status": "healthy",
+  "models": {
+    "gender": {
+      "status": "loaded",
+      "file_exists": true,
+      "lazy_loadable": true
+    }
+  },
+  "uptime_seconds": 1234.5,
+  "version": "2.0.0"
+}
+```
 
 ### POST /predict
-Main prediction endpoint accepting multipart form data:
+Enhanced prediction endpoint with structured response:
 - `face_img` (optional): Face image file
 - `xray_img` (optional): X-ray image file
 
+**Response Structure:**
+```json
+{
+  "ok": true,
+  "modalities": [
+    {
+      "type": "face",
+      "label": "PCOS indicators detected",
+      "scores": [0.3, 0.7],
+      "risk": "high",
+      "original_img": "/static/uploads/face-123.jpg",
+      "gender": {"male": 0.1, "female": 0.9, "label": "female"},
+      "per_model": {"vgg16": 0.65, "resnet50": 0.75},
+      "ensemble": {
+        "method": "weighted_average",
+        "score": 0.7,
+        "models_used": 2,
+        "weights_used": {"vgg16": 0.5, "resnet50": 0.5}
+      }
+    },
+    {
+      "type": "xray",
+      "label": "PCOS symptoms detected",
+      "scores": [0.8],
+      "risk": "high",
+      "original_img": "/static/uploads/xray-456.jpg",
+      "visualization": "/static/uploads/yolo-789.jpg",
+      "found_labels": ["cyst", "ovary"],
+      "detections": [
+        {"box": [100, 150, 200, 250], "conf": 0.85, "label": "cyst"}
+      ],
+      "per_roi": [
+        {
+          "roi_id": 0,
+          "box": [100, 150, 200, 250],
+          "per_model": {"xray_a": 0.75, "xray_b": 0.85},
+          "ensemble": {"method": "weighted_average", "score": 0.8, "models_used": 2}
+        }
+      ],
+      "per_model": {"xray_a": 0.75, "xray_b": 0.85},
+      "ensemble": {"method": "weighted_average", "score": 0.8, "models_used": 2}
+    }
+  ],
+  "final": {
+    "overall_risk": "high",
+    "confidence": 0.75,
+    "explanation": "High risk: Multiple indicators detected across modalities"
+  },
+  "warnings": [],
+  "processing_time_ms": 1250.5,
+  "debug": {
+    "face_processing": {"filename": "face.jpg", "models_used": ["vgg16", "resnet50"]},
+    "xray_processing": {"filename": "xray.jpg", "detections_count": 2, "roi_count": 1}
+  }
+}
+```
+
 ### POST /predict-legacy
-Backward compatibility endpoint (same as /predict)
+Backward compatibility endpoint returning flat structure for existing frontends
 
 ### GET /img-proxy?url=...
 Safe CORS proxy for external images
@@ -136,13 +213,17 @@ Safe CORS proxy for external images
 ### Face Analysis Pipeline
 1. **Gender Detection**: Classify male/female
 2. **Gender Gating**: Skip PCOS analysis for males
-3. **PCOS Ensemble**: Multiple models → weighted average → risk classification
+3. **Per-Model Analysis**: Run each face model individually
+4. **Ensemble Fusion**: Weighted average → risk classification
+5. **Metadata Collection**: Store per-model scores and ensemble details
 
 ### X-ray Analysis Pipeline
 1. **YOLO Detection**: Find ROIs → generate overlay
-2. **ROI Classification**: Classify each detected region
-3. **Fallback**: Full image classification if no detections
-4. **Ensemble**: Weighted average → risk classification
+2. **Per-ROI Analysis**: Crop and classify each detected region
+3. **ROI Ensemble**: Combine models for each ROI
+4. **Global Ensemble**: Average across all ROIs
+5. **Fallback**: Full image classification if no detections
+6. **Metadata Collection**: Store detections, ROI details, and ensemble info
 
 ### Risk Classification
 - **Low Risk**: < 33% probability
@@ -151,11 +232,25 @@ Safe CORS proxy for external images
 
 ## 🧪 Testing
 
+### Automated Testing
+
+```bash
+# Run comprehensive test suite
+cd backend && python test_endpoints.py
+
+# Run cURL examples
+cd backend && ./curl_examples.sh
+```
+
 ### Manual Testing
 
 ```bash
 # Test health endpoint
 curl http://127.0.0.1:5000/health
+
+# Test structured response
+curl -X POST "http://127.0.0.1:5000/predict" \
+  -F "face_img=@test_face.jpg" | jq '.modalities[0].per_model'
 
 # Test with face image only
 curl -X POST "http://127.0.0.1:5000/predict" \
@@ -169,6 +264,10 @@ curl -X POST "http://127.0.0.1:5000/predict" \
 curl -X POST "http://127.0.0.1:5000/predict" \
   -F "face_img=@test_face.jpg" \
   -F "xray_img=@test_xray.jpg"
+
+# Test legacy compatibility
+curl -X POST "http://127.0.0.1:5000/predict-legacy" \
+  -F "face_img=@test_face.jpg"
 ```
 
 ### Frontend Testing
@@ -179,6 +278,8 @@ curl -X POST "http://127.0.0.1:5000/predict" \
 4. Verify results display correctly
 5. Test sample images functionality
 6. Test camera capture (requires HTTPS in production)
+7. Check per-model breakdowns in results
+8. Verify ROI analysis for X-ray images
 
 ## 🐳 Production Deployment
 
@@ -225,12 +326,15 @@ npm run build
 - Structured logging with timestamps
 - Processing time tracking
 - Error rate monitoring
+- Per-model performance tracking
+- ROI analysis metrics
 
 ### Frontend Monitoring
 - Backend connectivity status
 - Real-time health checks
 - User-friendly error messages
 - Performance metrics
+- Rich result visualization
 
 ## 🔍 Troubleshooting
 
@@ -245,6 +349,7 @@ npm run build
    - Verify model files are in correct locations
    - Check file permissions
    - Review backend logs for loading errors
+    - Test lazy loading capability via health endpoint
 
 3. **CORS Errors**
    - Ensure frontend origin is in `ALLOWED_ORIGINS`
@@ -260,6 +365,13 @@ npm run build
 
 Educational and research use only. Not for medical diagnosis or treatment.
 
+    - Check ROI detection in debug output
+- Debug information in API responses
+
+6. **Per-Model Results Missing**
+   - Verify all model files are present
+   - Check model loading in health endpoint
+   - Review ensemble configuration
 ## 👨‍💻 Author
 
 **DHANUSH RAJA (21MIC0158)**
@@ -275,4 +387,4 @@ This full-stack application is production-ready. Simply:
 3. **Start the frontend** with `npm run dev`
 4. **Access the application** at http://localhost:5173
 
-The application will automatically handle model loading, ensemble predictions, file management, and provide a complete PCOS screening interface!
+The application will automatically handle model loading, ensemble predictions, per-model analysis, ROI processing, file management, and provide a complete PCOS screening interface with rich debugging capabilities!

@@ -283,7 +283,10 @@ class FaceManager:
                 "gender": gender_result,
                 "face_scores": [],
                 "face_pred": None,
-                "face_risk": "unknown"
+                "face_risk": "unknown",
+                "per_model": {},
+                "ensemble": None,
+                "models_used": []
             }
             
             # Check if we should skip PCOS analysis for males
@@ -298,12 +301,25 @@ class FaceManager:
                 pcos_predictions = await self.predict_pcos(image_bytes)
                 
                 if pcos_predictions:
+                    # Store per-model predictions
+                    result["per_model"] = pcos_predictions
+                    result["models_used"] = list(pcos_predictions.keys())
+                    
                     # Extract weights for ensemble
                     weights = {name: config["weight"] for name, config in settings.FACE_PCOS_MODELS.items()}
                     
                     # Run ensemble
                     ensemble_result = self.ensemble_manager.combine_face_models(pcos_predictions, weights)
                     final_score = ensemble_result["score"]
+                    
+                    # Store ensemble metadata
+                    from schemas import EnsembleResult
+                    result["ensemble"] = EnsembleResult(
+                        method=ensemble_result["method"],
+                        score=final_score,
+                        models_used=ensemble_result["models_used"],
+                        weights_used=ensemble_result.get("weights_used")
+                    )
                     
                     # Convert predictions to list for face_scores
                     result["face_scores"] = [float(score) for score in pcos_predictions.values()]

@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { ConfidenceVisualization } from '@/components/ConfidenceVisualization'
 import { withBase } from '@/lib/api'
+import type { ModalityResult } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { motion } from 'framer-motion'
 
@@ -15,6 +16,7 @@ interface ResultCardProps {
   foundLabels?: string[]
   riskLevel: 'low' | 'moderate' | 'high' | 'unknown'
   confidence?: number // Overall confidence from final result
+  modality?: ModalityResult // Full modality data for enhanced display
   className?: string
 }
 
@@ -53,6 +55,7 @@ export function ResultCard({
   foundLabels,
   riskLevel,
   confidence,
+  modality,
   className,
 }: ResultCardProps) {
   return (
@@ -89,12 +92,28 @@ export function ResultCard({
             </p>
           </div>
 
+          {/* Gender Information for Face Analysis */}
+          {modality?.gender && (
+            <div>
+              <h4 className="font-semibold mb-3 text-slate-800">Gender Detection</h4>
+              <div className="bg-white/70 p-3 rounded-lg border border-slate-200">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm">Detected Gender:</span>
+                  <Badge variant="outline" className="capitalize">
+                    {modality.gender.label} ({(Math.max(modality.gender.male, modality.gender.female) * 100).toFixed(1)}%)
+                  </Badge>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Enhanced Confidence Visualization */}
           <ConfidenceVisualization 
             scores={scores}
             prediction={prediction}
             analysisType={title.toLowerCase().includes('face') ? 'face' : 'xray'}
             confidence={confidence}
+            ensemble={modality?.ensemble}
           />
 
           {/* Found Labels */}
@@ -110,6 +129,28 @@ export function ResultCard({
                   >
                     {label}
                   </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* YOLO Detections for X-ray */}
+          {modality?.detections && modality.detections.length > 0 && (
+            <div>
+              <h4 className="font-semibold mb-3 text-slate-800">Object Detections</h4>
+              <div className="space-y-2">
+                {modality.detections.map((detection, index) => (
+                  <div key={index} className="bg-white/70 p-3 rounded-lg border border-slate-200">
+                    <div className="flex justify-between items-center">
+                      <span className="capitalize font-medium">{detection.label}</span>
+                      <Badge variant="outline">
+                        {(detection.conf * 100).toFixed(1)}% confidence
+                      </Badge>
+                    </div>
+                    <div className="text-xs text-slate-600 mt-1">
+                      Box: [{detection.box.map(n => n.toFixed(0)).join(', ')}]
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>

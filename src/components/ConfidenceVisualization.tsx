@@ -3,15 +3,17 @@ import { TrendingUp, Brain, Activity } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
+import type { EnsembleResult } from '@/lib/api'
 
 interface ConfidenceVisualizationProps {
   scores?: number[]
   prediction: string
   analysisType: 'face' | 'xray'
   confidence?: number // Optional overall confidence from final result
+  ensemble?: EnsembleResult // Ensemble metadata
 }
 
-export function ConfidenceVisualization({ scores, prediction, analysisType, confidence }: ConfidenceVisualizationProps) {
+export function ConfidenceVisualization({ scores, prediction, analysisType, confidence, ensemble }: ConfidenceVisualizationProps) {
   if (!scores || scores.length < 2) return null
 
   // Use provided confidence or calculate from scores
@@ -94,6 +96,43 @@ export function ConfidenceVisualization({ scores, prediction, analysisType, conf
               </div>
             </div>
           </div>
+
+          {/* Ensemble Information */}
+          {ensemble && (
+            <div className="bg-white/70 p-4 rounded-lg border border-indigo-200">
+              <h4 className="font-semibold mb-3 flex items-center gap-2 text-slate-800">
+                <Activity className="h-4 w-4 text-indigo-600" />
+                Ensemble Details
+              </h4>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Method:</span>
+                  <span className="font-medium capitalize">{ensemble.method.replace('_', ' ')}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Models Used:</span>
+                  <span className="font-medium">{ensemble.models_used}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Final Score:</span>
+                  <span className="font-medium">{(ensemble.score * 100).toFixed(1)}%</span>
+                </div>
+                {ensemble.weights_used && (
+                  <div className="col-span-2">
+                    <span className="text-slate-600">Model Weights:</span>
+                    <div className="mt-1 space-y-1">
+                      {Object.entries(ensemble.weights_used).map(([model, weight]) => (
+                        <div key={model} className="flex justify-between text-xs">
+                          <span className="capitalize">{model.replace('_', ' ')}</span>
+                          <span>{weight.toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Analysis Features */}
           <div className="bg-white/70 p-4 rounded-lg border border-indigo-200">

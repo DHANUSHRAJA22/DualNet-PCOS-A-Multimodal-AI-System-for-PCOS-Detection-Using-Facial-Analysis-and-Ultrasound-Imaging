@@ -22,13 +22,18 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from config import settings, STATIC_DIR, UPLOADS_DIR
 from managers.face_manager import FaceManager
 from managers.xray_manager import XrayManager
 from ensemble import EnsembleManager
 from utils.validators import validate_request_files, validate_proxy_url, validate_file_size
+from schemas import (
+    StructuredPredictionResponse, 
+    LegacyPredictionResponse, 
+    EnhancedHealthResponse,
+    ErrorResponse
+)
 
 # Configure logging
 logging.basicConfig(
@@ -66,49 +71,6 @@ ensemble_manager = EnsembleManager()
 
 # Track startup time
 startup_time = datetime.now()
-
-# Enhanced Response models
-class ModalityResult(BaseModel):
-    type: str
-    label: str
-    scores: List[float]
-    risk: str
-    original_img: Optional[str] = None
-    visualization: Optional[str] = None
-    found_labels: Optional[List[str]] = None
-
-class FinalResult(BaseModel):
-    overall_risk: str
-    confidence: float
-    explanation: str
-
-class StructuredPredictionResponse(BaseModel):
-    ok: bool
-    modalities: List[ModalityResult]
-    final: FinalResult
-    warnings: List[str] = []
-    processing_time_ms: float
-
-class LegacyPredictionResponse(BaseModel):
-    ok: bool
-    face_pred: Optional[str] = None
-    face_scores: Optional[List[float]] = None
-    face_img: Optional[str] = None
-    face_risk: Optional[str] = None
-    xray_pred: Optional[str] = None
-    xray_img: Optional[str] = None
-    yolo_vis: Optional[str] = None
-    found_labels: Optional[List[str]] = None
-    xray_risk: Optional[str] = None
-    combined: Optional[str] = None
-    overall_risk: Optional[str] = None
-    message: str = "ok"
-
-class EnhancedHealthResponse(BaseModel):
-    status: str
-    models: Dict[str, Dict[str, Any]]
-    uptime_seconds: float
-    version: str
 
 def cleanup_old_files():
     """Clean up old uploaded files"""
@@ -182,37 +144,38 @@ async def enhanced_health_check():
         models_status = {}
         
         # Face models
-        models_status["gender"] = {
-            "loaded": face_status.get("gender", {}).get("loaded", False),
-            "available": face_status.get("gender", {}).get("available", False),
-            "lazy_loadable": face_manager.can_lazy_load_gender(),
-            "error": face_status.get("gender", {}).get("error")
-        }
+        from schemas import ModelStatus
         
-        models_status["face"] = {
-            "loaded": face_status.get("face", {}).get("loaded", False),
-            "available": face_status.get("face", {}).get("available", False),
-            "lazy_loadable": face_manager.can_lazy_load_pcos(),
-            "error": face_status.get("face", {}).get("error")
-        }
+        models_status["gender"] = ModelStatus(
+            status="loaded" if face_status.get("gender", {}).get("loaded", False) else "not_loaded",
+            file_exists=face_status.get("gender", {}).get("available", False),
+            lazy_loadable=face_manager.can_lazy_load_gender(),
+            error=face_status.get("gender", {}).get("error")
+        )
         
-        # X-ray models
-        models_status["yolo"] = {
-            "loaded": xray_status.get("yolo", {}).get("loaded", False),
-            "available": xray_status.get("yolo", {}).get("available", False),
-            "lazy_loadable": xray_manager.can_lazy_load_yolo(),
-            "error": xray_status.get("yolo", {}).get("error")
-        }
+        models_status["face"] = ModelStatus(
+            status="loaded" if face_status.get("face", {}).get("loaded", False) else "not_loaded",
+            file_exists=face_status.get("face", {}).get("available", False),
+            lazy_loadable=face_manager.can_lazy_load_pcos(),
+            error=face_status.get("face", {}).get("error")
+        )
         
-        models_status["xray"] = {
-            "loaded": xray_status.get("xray", {}).get("loaded", False),
-            "available": xray_status.get("xray", {}).get("available", False),
-            "lazy_loadable": xray_manager.can_lazy_load_pcos(),
-            "error": xray_status.get("xray", {}).get("error")
-        }
+        models_status["yolo"] = ModelStatus(
+            status="loaded" if xray_status.get("yolo", {}).get("loaded", False) else "not_loaded",
+            file_exists=xray_status.get("yolo", {}).get("available", False),
+            lazy_loadable=xray_manager.can_lazy_load_yolo(),
+            error=xray_status.get("yolo", {}).get("error")
+        )
+        
+        models_status["xray"] = ModelStatus(
+            status="loaded" if xray_status.get("xray", {}).get("loaded", False) else "not_loaded",
+            file_exists=xray_status.get("xray", {}).get("available", False),
+            lazy_loadable=xray_manager.can_lazy_load_pcos(),
+            error=xray_status.get("xray", {}).get("error")
+        )
         
         # Determine overall status
-        loadable_count = sum(1 for model in models_status.values() if model.get("lazy_loadable", False))
+        loadable_count = sum(1 for model in models_status.values() if model.lazy_loadable)
         total_models = len(models_status)
         
         if loadable_count == 0:
@@ -233,13 +196,14 @@ async def enhanced_health_check():
         logger.error(f"Health check failed: {str(e)}")
         logger.error(traceback.format_exc())
         
+        from schemas import ModelStatus
         return EnhancedHealthResponse(
             status="error",
             models={
-                "gender": {"loaded": False, "available": False, "lazy_loadable": False, "error": str(e)},
-                "face": {"loaded": False, "available": False, "lazy_loadable": False, "error": str(e)},
-                "yolo": {"loaded": False, "available": False, "lazy_loadable": False, "error": str(e)},
-                "xray": {"loaded": False, "available": False, "lazy_loadable": False, "error": str(e)}
+                "gender": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e)),
+                "face": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e)),
+                "yolo": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e)),
+                "xray": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e))
             },
             uptime_seconds=0.0,
             version="2.0.0"
@@ -270,16 +234,24 @@ async def structured_predict(
         validate_uploaded_file(xray_img)
     
     try:
+        from schemas import ModalityResult, FinalResult
+        
         modalities = []
         warnings = []
         face_score = None
         xray_score = None
+        debug_info = {}
         
         # Process face image if provided
         if face_img:
             logger.info("Processing face image")
             try:
                 face_result = await face_manager.process_face_image(face_img)
+                debug_info["face_processing"] = {
+                    "filename": face_img.filename,
+                    "models_used": face_result.get("models_used", []),
+                    "gender_detected": face_result.get("gender", {}).get("label")
+                }
                 
                 # Extract data for modality result
                 face_risk = classify_risk(face_result.get("ensemble_score", 0))
@@ -290,6 +262,9 @@ async def structured_predict(
                     scores=face_result.get("face_scores", []),
                     risk=face_risk,
                     original_img=face_result.get("face_img")
+                    gender=face_result.get("gender"),
+                    per_model=face_result.get("per_model"),
+                    ensemble=face_result.get("ensemble")
                 )
                 modalities.append(modality)
                 
@@ -318,6 +293,12 @@ async def structured_predict(
             logger.info("Processing X-ray image")
             try:
                 xray_result = await xray_manager.process_xray_image(xray_img)
+                debug_info["xray_processing"] = {
+                    "filename": xray_img.filename,
+                    "detections_count": len(xray_result.get("detections", [])),
+                    "roi_count": len(xray_result.get("per_roi", [])),
+                    "models_used": xray_result.get("models_used", [])
+                }
                 
                 # Extract data for modality result
                 xray_risk = classify_risk(xray_result.get("ensemble_score", 0))
@@ -330,6 +311,10 @@ async def structured_predict(
                     original_img=xray_result.get("xray_img"),
                     visualization=xray_result.get("yolo_vis"),
                     found_labels=xray_result.get("found_labels", [])
+                    detections=xray_result.get("detections"),
+                    per_roi=xray_result.get("per_roi"),
+                    per_model=xray_result.get("per_model"),
+                    ensemble=xray_result.get("ensemble")
                 )
                 modalities.append(modality)
                 
@@ -351,6 +336,12 @@ async def structured_predict(
         
         # Generate final combined result
         final_result = ensemble_manager.combine_modalities(face_score, xray_score)
+        debug_info["final_fusion"] = {
+            "face_score": face_score,
+            "xray_score": xray_score,
+            "fusion_method": "weighted_average",
+            "modalities_used": final_result.get("modalities_used", [])
+        }
         
         # Create final assessment
         final = FinalResult(
@@ -367,7 +358,8 @@ async def structured_predict(
             modalities=modalities,
             final=final,
             warnings=warnings,
-            processing_time_ms=processing_time
+            processing_time_ms=processing_time,
+            debug=debug_info
         )
         
     except HTTPException:
