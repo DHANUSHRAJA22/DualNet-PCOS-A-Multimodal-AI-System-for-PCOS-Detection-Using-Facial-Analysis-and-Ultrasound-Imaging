@@ -89,8 +89,8 @@ class FaceManager:
     def can_lazy_load_pcos(self) -> bool:
         """Check if PCOS models can be lazy loaded"""
         return any(
-            (FACE_MODELS_DIR / config["path"]).exists() 
-            for config in settings.FACE_PCOS_MODELS.values()
+            (FACE_MODELS_DIR / filename).exists() 
+            for filename in settings.FACE_MODELS.values()
         )
     
     def _load_models(self) -> None:

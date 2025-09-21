@@ -212,30 +212,6 @@ export async function postPredictFile(file: File, type: 'face' | 'xray'): Promis
   
   return response.json()
 }
-export async function postPredictFile(file: File, type: 'face' | 'xray'): Promise<any> {
-  const formData = new FormData()
-  formData.append('file', file)
-  
-  const url = withBase(`/predict-file?type=${type}`)
-  
-  const response = await fetchWithTimeout(url, {
-    method: 'POST',
-    body: formData,
-  }, 10000)
-  
-  if (!response.ok) {
-    let errorMessage = 'Analysis failed'
-    try {
-      const errorData = await response.json()
-      errorMessage = errorData.message || errorData.detail || errorMessage
-    } catch {
-      errorMessage = await response.text() || errorMessage
-    }
-    throw new Error(errorMessage)
-  }
-  
-  return response.json()
-}
 
 export async function getEnhancedHealth(): Promise<EnhancedHealthResponse> {
   const url = withBase('/health')

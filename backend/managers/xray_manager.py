@@ -100,8 +100,8 @@ class XrayManager:
     def can_lazy_load_pcos(self) -> bool:
         """Check if PCOS models can be lazy loaded"""
         return any(
-            (XRAY_MODELS_DIR / config["path"]).exists() 
-            for config in settings.XRAY_PCOS_MODELS.values()
+            (XRAY_MODELS_DIR / filename).exists() 
+            for filename in settings.XRAY_MODELS.values()
         )
     
     def _load_models(self) -> None:

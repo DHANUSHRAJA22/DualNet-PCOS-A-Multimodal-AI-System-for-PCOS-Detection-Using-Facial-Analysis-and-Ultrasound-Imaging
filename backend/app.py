@@ -274,8 +274,8 @@ async def structured_predict(
                 
                 # Update debug info
                 debug_info["models_used"].extend(face_result.get("models_used", []))
-                if face_result.get("ensemble", {}).get("weights_used"):
-                    debug_info["weights"]["face"] = face_result["ensemble"]["weights_used"]
+                    if face_result.get("ensemble") and hasattr(face_result["ensemble"], "weights_used"):
+                        debug_info["weights"]["face"] = face_result["ensemble"].weights_used
                 
                 # Check for male face warning
                 if face_result.get("gender", {}).get("label") == "male":
@@ -323,8 +323,8 @@ async def structured_predict(
                 
                 # Update debug info
                 debug_info["models_used"].extend(xray_result.get("models_used", []))
-                if xray_result.get("ensemble", {}).get("weights_used"):
-                    debug_info["weights"]["xray"] = xray_result["ensemble"]["weights_used"]
+                if xray_result.get("ensemble") and hasattr(xray_result["ensemble"], "weights_used"):
+                    debug_info["weights"]["xray"] = xray_result["ensemble"].weights_used
                 
                 # Add ROI boxes to debug
                 if xray_result.get("per_roi"):
