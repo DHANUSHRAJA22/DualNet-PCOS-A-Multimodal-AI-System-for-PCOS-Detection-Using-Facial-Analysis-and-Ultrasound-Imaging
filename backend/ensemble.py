@@ -7,6 +7,7 @@ weight normalization and missing model handling.
 
 from typing import Dict, List, Optional, Any
 import logging
+from config import settings, get_risk_level
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,8 @@ class EnsembleManager:
     
     def __init__(self):
         """Initialize ensemble manager"""
-        pass
+        self.fusion_mode = settings.FUSION_MODE
+        logger.info(f"Initialized EnsembleManager with fusion_mode={self.fusion_mode}")
     
     def combine_face_models(self, per_model: Dict[str, float], weights: Dict[str, float]) -> Dict[str, Any]:
         """
@@ -128,64 +130,110 @@ class EnsembleManager:
                 "fusion_method": "none"
             }
         
-        # Enhanced fusion logic with thresholds
-        high_risk_count = sum(1 for score in available_scores if score >= 0.66)
-        moderate_risk_count = sum(1 for score in available_scores if 0.33 <= score < 0.66)
+        # Apply fusion logic based on mode
+        if self.fusion_mode == "discrete":
+            return self._discrete_fusion(face_score, xray_score, modalities_used)
+        else:
+            return self._threshold_fusion(available_scores, modalities_used)
+    
+    def _threshold_fusion(self, scores: List[float], modalities_used: List[str]) -> Dict[str, Any]:
+        """
+        Threshold-based fusion using probability bands
         
-        # Discrete fusion rules
-        if len(available_scores) == 2:  # Both modalities
-            if high_risk_count == 2:
-                risk_level = "high"
-                explanation = "High risk: Both facial and X-ray analysis indicate PCOS symptoms."
-            elif high_risk_count == 1:
-                risk_level = "moderate"
-                explanation = "Moderate risk: One modality shows high risk indicators."
-            elif moderate_risk_count >= 1:
-                risk_level = "moderate"
-                explanation = "Moderate risk: Mixed indicators across modalities."
-            else:
-                risk_level = "low"
-                explanation = "Low risk: Both modalities show minimal PCOS indicators."
-        else:  # Single modality
-            single_score = available_scores[0]
-            if single_score >= 0.66:
-                risk_level = "high"
-            elif single_score >= 0.33:
-                risk_level = "moderate"
-            else:
-                risk_level = "low"
+        Args:
+            scores: List of available scores
+            modalities_used: List of modality names
             
-            modality_name = "facial analysis" if "face" in modalities_used else "X-ray analysis"
-            explanation = f"{risk_level.title()} risk based on {modality_name}."
-        
+        Returns:
+            Dictionary with fusion results
+        """
         # Calculate final score as weighted average
-        final_score = sum(available_scores) / len(available_scores)
+        final_score = sum(scores) / len(scores)
+        
+        # Classify risk using thresholds
+        risk_level = get_risk_level(final_score)
+        
+        # Generate explanation
+        if len(scores) == 2:
+            explanation = f"{risk_level.title()} risk: Combined analysis across facial and X-ray modalities (confidence: {final_score:.1%})"
+        else:
+            modality_name = "facial analysis" if "face" in modalities_used else "X-ray analysis"
+            explanation = f"{risk_level.title()} risk based on {modality_name} (confidence: {final_score:.1%})"
         
         return {
             "overall_risk": risk_level,
             "combined": explanation,
             "modalities_used": modalities_used,
             "final_score": float(final_score),
-            "fusion_method": "discrete_rules",
-            "high_risk_count": high_risk_count,
-            "thresholds_used": {"low": 0.33, "high": 0.66}
+            "fusion_method": "threshold",
+            "thresholds_used": {
+                "low": settings.RISK_LOW_THRESHOLD,
+                "high": settings.RISK_HIGH_THRESHOLD
+            }
         }
     
-    def _classify_risk(self, score: float) -> str:
+    def _discrete_fusion(self, face_score: Optional[float], xray_score: Optional[float], modalities_used: List[str]) -> Dict[str, Any]:
         """
-        Classify risk level based on probability score
+        Discrete fusion rules: high only when both high, moderate when exactly one high
         
         Args:
-            score: PCOS probability (0.0 to 1.0)
+            face_score: Face score (can be None)
+            xray_score: X-ray score (can be None)
+            modalities_used: List of modality names
             
         Returns:
-            Risk level: "low", "moderate", or "high"
+            Dictionary with fusion results
         """
-        from config import settings
+        # Count high-risk modalities
+        high_count = 0
+        moderate_count = 0
         
-        if score < settings.RISK_LOW_THRESHOLD:
-            return "low"
-        elif score < settings.RISK_HIGH_THRESHOLD:
-            return "moderate"
-        else:
-            return "high"
+        if face_score is not None:
+            if face_score >= settings.RISK_HIGH_THRESHOLD:
+                high_count += 1
+            elif face_score >= settings.RISK_LOW_THRESHOLD:
+                moderate_count += 1
+        
+        if xray_score is not None:
+            if xray_score >= settings.RISK_HIGH_THRESHOLD:
+                high_count += 1
+            elif xray_score >= settings.RISK_LOW_THRESHOLD:
+                moderate_count += 1
+        
+        # Apply discrete rules
+        if len(modalities_used) == 2:  # Both modalities
+            if high_count == 2:
+                risk_level = "high"
+                explanation = "High risk: Both facial and X-ray analysis indicate PCOS symptoms"
+            elif high_count == 1:
+                risk_level = "moderate"
+                explanation = "Moderate risk: One modality shows high risk indicators"
+            elif moderate_count >= 1:
+                risk_level = "moderate"
+                explanation = "Moderate risk: Mixed indicators across modalities"
+            else:
+                risk_level = "low"
+                explanation = "Low risk: Both modalities show minimal PCOS indicators"
+        else:  # Single modality
+            single_score = face_score if face_score is not None else xray_score
+            risk_level = get_risk_level(single_score)
+            modality_name = "facial analysis" if "face" in modalities_used else "X-ray analysis"
+            explanation = f"{risk_level.title()} risk based on {modality_name}"
+        
+        # Calculate final score for confidence
+        available_scores = [s for s in [face_score, xray_score] if s is not None]
+        final_score = sum(available_scores) / len(available_scores) if available_scores else 0.0
+        
+        return {
+            "overall_risk": risk_level,
+            "combined": explanation,
+            "modalities_used": modalities_used,
+            "final_score": float(final_score),
+            "fusion_method": "discrete",
+            "high_risk_count": high_count,
+            "moderate_risk_count": moderate_count,
+            "thresholds_used": {
+                "low": settings.RISK_LOW_THRESHOLD,
+                "high": settings.RISK_HIGH_THRESHOLD
+            }
+        }

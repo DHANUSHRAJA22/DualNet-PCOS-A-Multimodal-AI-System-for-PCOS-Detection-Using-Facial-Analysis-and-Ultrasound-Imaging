@@ -112,7 +112,7 @@ export function ResultCard({
             scores={scores}
             prediction={prediction}
             analysisType={title.toLowerCase().includes('face') ? 'face' : 'xray'}
-            confidence={confidence}
+            confidence={modality?.ensemble?.score || confidence}
             ensemble={modality?.ensemble}
           />
 

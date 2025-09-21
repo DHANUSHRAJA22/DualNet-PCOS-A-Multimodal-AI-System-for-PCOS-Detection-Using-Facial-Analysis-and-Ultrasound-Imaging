@@ -80,9 +80,10 @@ class ModalityResult(BaseModel):
 
 class FinalResult(BaseModel):
     """Final combined prediction results"""
-    overall_risk: str = Field(..., description="Overall risk level: 'low', 'moderate', 'high', 'unknown'")
+    risk: str = Field(..., description="Overall risk level: 'low', 'moderate', 'high', 'unknown'")
     confidence: float = Field(..., description="Overall confidence score (0.0-1.0)")
     explanation: str = Field(..., description="Human-readable explanation of the results")
+    fusion_mode: str = Field(..., description="Fusion mode used: 'threshold' or 'discrete'")
 
 class StructuredPredictionResponse(BaseModel):
     """Rich prediction response for new frontend"""

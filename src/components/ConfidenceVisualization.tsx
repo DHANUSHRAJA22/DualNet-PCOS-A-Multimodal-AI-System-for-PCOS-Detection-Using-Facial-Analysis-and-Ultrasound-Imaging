@@ -17,7 +17,9 @@ export function ConfidenceVisualization({ scores, prediction, analysisType, conf
   if (!scores || scores.length < 2) return null
 
   // Use provided confidence or calculate from scores
-  const displayConfidence = confidence !== undefined ? confidence * 100 : Math.max(...scores) * 100
+  const displayConfidence = confidence !== undefined 
+    ? (confidence > 1 ? confidence : confidence * 100)  // Handle both 0-1 and 0-100 ranges
+    : Math.max(...scores) * 100
   const nonPcosScore = scores[0] * 100
   const pcosScore = scores[1] * 100
 

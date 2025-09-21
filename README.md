@@ -4,10 +4,12 @@ A comprehensive, production-ready full-stack application for PCOS screening anal
 
 ## 🚀 Production Features
 
+- **Configurable Ensemble**: Toggle between single model and ensemble inference
+- **Flexible Fusion**: Choose between threshold-based and discrete fusion modes
+- **Dynamic Label Loading**: Class labels loaded from `.labels.txt` files
 - **Structured API Responses**: Rich JSON with per-model scores, ROI details, and debug information
 - **Legacy Compatibility**: `/predict-legacy` endpoint for existing frontends
 - **Enhanced Error Handling**: Consistent `{ok: true/false}` response format
-- **Dynamic Label Loading**: Class labels loaded from `.labels.txt` files
 - **Ensemble Models**: Support for VGG16, ResNet50, EfficientNet architectures
 - **Risk Thresholds**: Configurable probability bands (<0.33/0.33-0.66/>0.66)
 - **Docker Deployment**: Production-ready containerization
@@ -69,11 +71,21 @@ npm run build
 
 ```bash
 # Backend (.env)
+USE_ENSEMBLE=true
+FUSION_MODE=threshold
 ALLOWED_ORIGINS=http://localhost:5173,https://your-frontend.com
 DEBUG=false
 MAX_UPLOAD_MB=5
 HOST=0.0.0.0
 PORT=5000
+
+# Ensemble weights (optional)
+FACE_VGG16_WEIGHT=0.33
+FACE_RESNET50_WEIGHT=0.33
+FACE_EFFICIENTNET_WEIGHT=0.34
+XRAY_VGG16_WEIGHT=0.33
+XRAY_RESNET50_WEIGHT=0.33
+XRAY_EFFICIENTNET_WEIGHT=0.34
 
 # Frontend
 VITE_API_BASE=https://your-backend.com
@@ -208,13 +220,19 @@ Enhanced prediction endpoint with rich metadata:
     }
   ],
   "final": {
-    "overall_risk": "high",
+    "risk": "high",
     "confidence": 0.75,
-    "explanation": "High risk: Multiple indicators detected"
+    "explanation": "High risk: Multiple indicators detected",
+    "fusion_mode": "threshold"
   },
+  "warnings": [],
+  "processing_time_ms": 1250.5,
   "debug": {
-    "face_processing": {"models_used": ["vgg16", "resnet50"]},
-    "final_fusion": {"fusion_method": "discrete_rules"}
+    "filenames": ["face_image.jpg"],
+    "models_used": ["vgg16", "resnet50"],
+    "weights": {"face": {"vgg16": 0.5, "resnet50": 0.5}},
+    "fusion_mode": "threshold",
+    "use_ensemble": true
   }
 }
 ```
@@ -258,6 +276,8 @@ The frontend automatically detects the backend URL:
 
 ```bash
 # Backend
+export USE_ENSEMBLE=true
+export FUSION_MODE=threshold
 export HOST=127.0.0.1
 export PORT=5000
 export DEBUG=true
@@ -377,6 +397,8 @@ services:
       - HOST=0.0.0.0
       - PORT=5000
       - DEBUG=false
+      - USE_ENSEMBLE=true
+      - FUSION_MODE=threshold
       - MAX_UPLOAD_MB=5
       - ALLOWED_ORIGINS=https://your-frontend.com
     volumes:
@@ -396,6 +418,8 @@ services:
 export DEBUG=false
 export HOST=0.0.0.0
 export PORT=5000
+export USE_ENSEMBLE=true
+export FUSION_MODE=threshold
 export ALLOWED_ORIGINS=https://your-frontend.com,https://your-domain.com
 export MAX_UPLOAD_MB=5
 
@@ -461,6 +485,7 @@ npm run build
    - Check file permissions
    - Review backend logs for loading errors
     - Test lazy loading capability via health endpoint
+   - Ensure `.labels.txt` files exist alongside model files
 
 3. **File Upload Errors**
    - Check file size (5MB limit by default)
@@ -468,16 +493,17 @@ npm run build
    - Ensure proper MIME type
    - Verify no 500 errors masquerading as CORS issues
 
-4. **File Upload Failures**
-   - Check file size (5MB limit)
-   - Verify supported formats (JPEG/PNG/WebP)
-   - Ensure proper MIME type
-4. **Label Loading Issues**
+4. **Ensemble Configuration**
+   - Set `USE_ENSEMBLE=false` to use single best model
+   - Adjust `FUSION_MODE` between "threshold" and "discrete"
+   - Configure model weights via environment variables
+
+5. **Label Loading Issues**
    - Ensure .labels.txt files exist in model directories
    - Check JSON format: `["non_pcos", "pcos"]`
    - Review backend logs for label loading errors
 
-5. **Docker Issues**
+6. **Docker Issues**
    - Ensure models directory is mounted: `-v ./models:/app/models:ro`
    - Check environment variables are set correctly
    - Verify port mapping: `-p 5000:5000`

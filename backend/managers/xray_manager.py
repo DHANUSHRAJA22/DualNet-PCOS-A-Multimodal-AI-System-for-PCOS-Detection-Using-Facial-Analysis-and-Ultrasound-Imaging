@@ -29,7 +29,7 @@ except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("Ultralytics YOLO not available")
 
-from config import settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR
+from config import settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR, get_risk_level
 from utils.validators import validate_image, get_safe_filename
 from ensemble import EnsembleManager
 
@@ -60,11 +60,16 @@ class XrayManager:
         self._load_models()
     
     def _load_class_labels(self) -> List[str]:
-        """Load class labels from .labels.txt file"""
-        labels_file = XRAY_MODELS_DIR / "xray_classifier.labels.txt"
+        """Load class labels dynamically from .labels.txt files"""
+        # Try to find any .labels.txt file in the xray models directory
+        labels_files = list(XRAY_MODELS_DIR.glob("*.labels.txt"))
         
         try:
-            if labels_file.exists():
+            if labels_files:
+                # Use the first labels file found
+                labels_file = labels_files[0]
+                logger.info(f"Loading X-ray labels from: {labels_file}")
+                
                 with open(labels_file, 'r') as f:
                     content = f.read().strip()
                     if content.startswith('[') and content.endswith(']'):
@@ -77,7 +82,7 @@ class XrayManager:
                 logger.info(f"Loaded X-ray class labels: {labels}")
                 return labels
             else:
-                logger.warning(f"X-ray labels file not found: {labels_file}, using defaults")
+                logger.warning(f"No X-ray labels files found in {XRAY_MODELS_DIR}, using defaults")
                 return ["normal", "pcos"]
                 
         except Exception as e:
@@ -140,15 +145,24 @@ class XrayManager:
         """Load PCOS classification models"""
         loaded_count = 0
         
-        for model_name, model_config in settings.XRAY_PCOS_MODELS.items():
-            model_path = XRAY_MODELS_DIR / model_config["path"]
+        # Load models based on USE_ENSEMBLE setting
+        if settings.USE_ENSEMBLE:
+            models_to_load = settings.XRAY_MODELS
+        else:
+            # Load only the best single model
+            best_model = settings.BEST_XRAY_MODEL
+            models_to_load = {best_model: settings.XRAY_MODELS[best_model]}
+        
+        for model_name, model_filename in models_to_load.items():
+            model_path = XRAY_MODELS_DIR / model_filename
             
             try:
                 if model_path.exists():
                     model = tf.keras.models.load_model(str(model_path), compile=False)
                     self.pcos_models[model_name] = {
                         "model": model,
-                        "config": model_config
+                        "filename": model_filename,
+                        "weight": settings.XRAY_ENSEMBLE_WEIGHTS.get(model_name, 1.0)
                     }
                     loaded_count += 1
                     logger.info(f"Loaded PCOS model {model_name}: {model_path}")
@@ -160,8 +174,8 @@ class XrayManager:
         
         self.model_status["xray"]["loaded"] = loaded_count > 0
         self.model_status["xray"]["available"] = any(
-            (XRAY_MODELS_DIR / config["path"]).exists() 
-            for config in settings.XRAY_PCOS_MODELS.values()
+            (XRAY_MODELS_DIR / filename).exists() 
+            for filename in settings.XRAY_MODELS.values()
         )
     
     def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
@@ -325,11 +339,9 @@ class XrayManager:
         for model_name, model_data in self.pcos_models.items():
             try:
                 model = model_data["model"]
-                config = model_data["config"]
-                
-                # Get input size from config
-                input_size = tuple(config["input_size"])
-                
+                # Use standard input size (224x224 for most models)
+                # Use standard input size (224x224 for most models)
+                input_size = (224, 224)
                 # Preprocess full image
                 image_array = self._preprocess_image(image_bytes, input_size)
                 
@@ -420,7 +432,7 @@ class XrayManager:
                         roi_predictions_list.append(roi_predictions)
                         
                         # Create ROI result with ensemble
-                        weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
+                        weights = {name: self.pcos_models[name]["weight"] for name in roi_predictions.keys()}
                         roi_ensemble = self.ensemble_manager.combine_xray_models(roi_predictions, weights)
                         
                         from schemas import ROIResult, EnsembleResult
@@ -456,8 +468,8 @@ class XrayManager:
                     result["per_model"] = averaged_predictions
                     result["models_used"] = list(averaged_predictions.keys())
                     
-                    # Extract weights for ensemble
-                    weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
+                    # Extract weights for ensemble (only for loaded models)
+                    weights = {name: self.pcos_models[name]["weight"] for name in averaged_predictions.keys()}
                     
                     # Run ensemble
                     ensemble_result = self.ensemble_manager.combine_xray_models(averaged_predictions, weights)
@@ -473,15 +485,15 @@ class XrayManager:
                     )
                     
                     # Determine prediction label and risk
-                    if final_score >= settings.RISK_HIGH_THRESHOLD:
+                    risk_level = get_risk_level(final_score)
+                    result["xray_risk"] = risk_level
+                    
+                    if risk_level == "high":
                         result["xray_pred"] = "PCOS symptoms detected in X-ray"
-                        result["xray_risk"] = "high"
-                    elif final_score >= settings.RISK_LOW_THRESHOLD:
+                    elif risk_level == "moderate":
                         result["xray_pred"] = "Moderate PCOS indicators in X-ray"
-                        result["xray_risk"] = "moderate"
                     else:
                         result["xray_pred"] = "No PCOS symptoms detected in X-ray"
-                        result["xray_risk"] = "low"
                     
                     result["ensemble_score"] = final_score
                 else:
@@ -496,8 +508,8 @@ class XrayManager:
                     result["per_model"] = full_image_predictions
                     result["models_used"] = list(full_image_predictions.keys())
                     
-                    # Extract weights for ensemble
-                    weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
+                    # Extract weights for ensemble (only for loaded models)
+                    weights = {name: self.pcos_models[name]["weight"] for name in full_image_predictions.keys()}
                     
                     # Run ensemble
                     ensemble_result = self.ensemble_manager.combine_xray_models(full_image_predictions, weights)
@@ -513,15 +525,15 @@ class XrayManager:
                     )
                     
                     # Determine prediction label and risk
-                    if final_score >= settings.RISK_HIGH_THRESHOLD:
+                    risk_level = get_risk_level(final_score)
+                    result["xray_risk"] = risk_level
+                    
+                    if risk_level == "high":
                         result["xray_pred"] = "PCOS symptoms detected in X-ray"
-                        result["xray_risk"] = "high"
-                    elif final_score >= settings.RISK_LOW_THRESHOLD:
+                    elif risk_level == "moderate":
                         result["xray_pred"] = "Moderate PCOS indicators in X-ray"
-                        result["xray_risk"] = "moderate"
                     else:
                         result["xray_pred"] = "No PCOS symptoms detected in X-ray"
-                        result["xray_risk"] = "low"
                     
                     result["ensemble_score"] = final_score
                 else:

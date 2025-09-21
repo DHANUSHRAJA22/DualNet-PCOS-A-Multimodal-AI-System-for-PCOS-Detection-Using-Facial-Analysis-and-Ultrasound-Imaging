@@ -53,15 +53,9 @@ app = FastAPI(
 )
 
 # Enhanced CORS middleware with environment-based origins
-allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "*")
-if allowed_origins_str == "*":
-    allowed_origins = ["*"]
-else:
-    allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",")]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -99,15 +93,6 @@ def cleanup_old_files():
                         
     except Exception as e:
         logger.error(f"File cleanup failed: {str(e)}")
-
-def classify_risk(score: float) -> str:
-    """Classify risk level based on probability score using thresholds"""
-    if score < settings.RISK_LOW_THRESHOLD:
-        return "low"
-    elif score < settings.RISK_HIGH_THRESHOLD:
-        return "moderate"
-    else:
-        return "high"
 
 def validate_uploaded_file(file: UploadFile) -> None:
     """Validate uploaded file size and type"""
@@ -151,19 +136,14 @@ def ensure_json_serializable(obj: Any) -> Any:
 
 @app.get("/health", response_model=EnhancedHealthResponse)
 async def enhanced_health_check():
-    """
-    Enhanced health check with lazy loading validation
-    
-    Tests actual model loading capability, not just file existence
-    """
+    """Enhanced health check with model status"""
     try:
         uptime = (datetime.now() - startup_time).total_seconds()
         
-        # Get detailed model status with lazy loading test
+        # Get model status
         face_status = face_manager.get_model_status()
         xray_status = xray_manager.get_model_status()
         
-        # Test lazy loading capability
         models_status = {}
         
         # Face models
@@ -237,11 +217,7 @@ async def structured_predict(
     face_img: Optional[UploadFile] = File(None),
     xray_img: Optional[UploadFile] = File(None)
 ):
-    """
-    Enhanced prediction endpoint with structured response format
-    
-    Returns comprehensive analysis with modalities array and final assessment
-    """
+    """Enhanced prediction endpoint with structured response format"""
     start_time = datetime.now()
     
     try:
@@ -263,28 +239,29 @@ async def structured_predict(
         warnings = []
         face_score = None
         xray_score = None
-        debug_info = {}
+        debug_info = {
+            "filenames": [],
+            "models_used": [],
+            "weights": {},
+            "roi_boxes": [],
+            "fusion_mode": settings.FUSION_MODE,
+            "use_ensemble": settings.USE_ENSEMBLE
+        }
         
         # Process face image if provided
         if face_img:
             logger.info("Processing face image")
+            debug_info["filenames"].append(face_img.filename)
+            
             try:
                 face_result = await face_manager.process_face_image(face_img)
-                debug_info["face_processing"] = {
-                    "filename": face_img.filename,
-                    "models_used": face_result.get("models_used", []),
-                    "gender_detected": face_result.get("gender", {}).get("label"),
-                    "weights_used": face_result.get("ensemble", {}).get("weights_used") if face_result.get("ensemble") else None
-                }
                 
                 # Extract data for modality result
-                face_risk = classify_risk(face_result.get("ensemble_score", 0))
-                
                 modality = ModalityResult(
                     type="face",
                     label=face_result.get("face_pred", "Analysis failed"),
                     scores=face_result.get("face_scores", []),
-                    risk=face_risk,
+                    risk=face_result.get("face_risk", "unknown"),
                     original_img=face_result.get("face_img"),
                     gender=face_result.get("gender"),
                     per_model=face_result.get("per_model"),
@@ -294,6 +271,11 @@ async def structured_predict(
                 
                 # Store score for final fusion
                 face_score = face_result.get("ensemble_score")
+                
+                # Update debug info
+                debug_info["models_used"].extend(face_result.get("models_used", []))
+                if face_result.get("ensemble", {}).get("weights_used"):
+                    debug_info["weights"]["face"] = face_result["ensemble"]["weights_used"]
                 
                 # Check for male face warning
                 if face_result.get("gender", {}).get("label") == "male":
@@ -315,38 +297,17 @@ async def structured_predict(
         # Process X-ray image if provided
         if xray_img:
             logger.info("Processing X-ray image")
+            debug_info["filenames"].append(xray_img.filename)
+            
             try:
                 xray_result = await xray_manager.process_xray_image(xray_img)
                 
-                # Enhanced debug info with ROI details
-                roi_details = []
-                if xray_result.get("per_roi"):
-                    for roi in xray_result["per_roi"]:
-                        roi_details.append({
-                            "roi_id": roi.roi_id,
-                            "box": roi.box,
-                            "per_model": roi.per_model,
-                            "ensemble": roi.ensemble.dict() if roi.ensemble else None
-                        })
-                
-                debug_info["xray_processing"] = {
-                    "filename": xray_img.filename,
-                    "detections_count": len(xray_result.get("detections", [])),
-                    "roi_count": len(xray_result.get("per_roi", [])),
-                    "models_used": xray_result.get("models_used", []),
-                    "weights_used": xray_result.get("ensemble", {}).get("weights_used") if xray_result.get("ensemble") else None,
-                    "roi_details": roi_details,
-                    "yolo_confidences": [det.conf for det in xray_result.get("detections", [])]
-                }
-                
                 # Extract data for modality result
-                xray_risk = classify_risk(xray_result.get("ensemble_score", 0))
-                
                 modality = ModalityResult(
                     type="xray",
                     label=xray_result.get("xray_pred", "Analysis failed"),
-                    scores=[xray_result.get("ensemble_score", 0)],  # X-ray returns single ensemble score
-                    risk=xray_risk,
+                    scores=[xray_result.get("ensemble_score", 0)],
+                    risk=xray_result.get("xray_risk", "unknown"),
                     original_img=xray_result.get("xray_img"),
                     visualization=xray_result.get("yolo_vis"),
                     found_labels=xray_result.get("found_labels", []),
@@ -359,6 +320,20 @@ async def structured_predict(
                 
                 # Store score for final fusion
                 xray_score = xray_result.get("ensemble_score")
+                
+                # Update debug info
+                debug_info["models_used"].extend(xray_result.get("models_used", []))
+                if xray_result.get("ensemble", {}).get("weights_used"):
+                    debug_info["weights"]["xray"] = xray_result["ensemble"]["weights_used"]
+                
+                # Add ROI boxes to debug
+                if xray_result.get("per_roi"):
+                    for roi in xray_result["per_roi"]:
+                        debug_info["roi_boxes"].append({
+                            "roi_id": roi.roi_id,
+                            "box": roi.box,
+                            "confidence": getattr(roi, 'confidence', 0.0)
+                        })
                 
             except Exception as e:
                 logger.error(f"X-ray processing failed: {str(e)}")
@@ -375,22 +350,13 @@ async def structured_predict(
         
         # Generate final combined result
         final_result = ensemble_manager.combine_modalities(face_score, xray_score)
-        debug_info["final_fusion"] = {
-            "face_score": face_score,
-            "xray_score": xray_score,
-            "fusion_method": final_result.get("fusion_method", "weighted_average"),
-            "modalities_used": final_result.get("modalities_used", []),
-            "thresholds_used": {
-                "low": settings.RISK_LOW_THRESHOLD,
-                "high": settings.RISK_HIGH_THRESHOLD
-            }
-        }
         
         # Create final assessment
         final = FinalResult(
-            overall_risk=final_result["overall_risk"],
+            risk=final_result["overall_risk"],
             confidence=final_result.get("final_score", 0.0),
-            explanation=final_result["combined"]
+            explanation=final_result["combined"],
+            fusion_mode=settings.FUSION_MODE
         )
         
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
@@ -414,17 +380,12 @@ async def structured_predict(
         logger.error(f"Structured prediction failed: {str(e)}")
         logger.error(traceback.format_exc())
         
-        return StructuredPredictionResponse(
-            ok=False,
-            modalities=[],
-            final=FinalResult(
-                overall_risk="unknown",
-                confidence=0.0,
-                explanation="Analysis failed due to internal error"
-            ),
-            warnings=[f"Internal error: {str(e)}"],
-            processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000,
-            debug={"error": str(e)}
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "details": str(e) if settings.DEBUG else "Internal server error"
+            }
         )
 
 @app.post("/predict-legacy", response_model=LegacyPredictionResponse)
@@ -432,11 +393,7 @@ async def legacy_predict(
     face_img: Optional[UploadFile] = File(None),
     xray_img: Optional[UploadFile] = File(None)
 ):
-    """
-    Legacy prediction endpoint for backward compatibility
-    
-    Returns results in the flat format expected by existing frontends
-    """
+    """Legacy prediction endpoint for backward compatibility"""
     try:
         # Get structured response first
         structured_response = await structured_predict(face_img, xray_img)
@@ -464,7 +421,7 @@ async def legacy_predict(
             
             # Final results
             legacy_response.combined = structured_response.final["explanation"]
-            legacy_response.overall_risk = structured_response.final["overall_risk"]
+            legacy_response.overall_risk = structured_response.final["risk"]
             legacy_response.message = "ok"
         else:
             # Handle error case
@@ -474,28 +431,38 @@ async def legacy_predict(
         
     except Exception as e:
         logger.error(f"Legacy prediction failed: {str(e)}")
-        return LegacyPredictionResponse(
-            ok=False,
-            message=f"Prediction failed: {str(e)}"
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "details": str(e) if settings.DEBUG else "Internal server error"
+            }
         )
 
 @app.post("/predict-file", response_model=StandardResponse)
 async def predict_file(
     file: UploadFile = File(...),
-    type: str = Query("face", description="Analysis type: 'face' or 'xray'")
+    type: str = Query("auto", description="Analysis type: 'face', 'xray', or 'auto'")
 ):
-    """
-    Single file upload endpoint for backward compatibility
-    
-    Accepts a single file and routes to appropriate analysis pipeline
-    """
+    """Single file upload endpoint with auto-detection"""
     try:
+        # Auto-detect type based on filename or content if needed
+        if type == "auto":
+            filename = file.filename.lower() if file.filename else ""
+            if any(keyword in filename for keyword in ["face", "portrait", "selfie"]):
+                type = "face"
+            elif any(keyword in filename for keyword in ["xray", "x-ray", "scan", "ultrasound"]):
+                type = "xray"
+            else:
+                # Default to face for auto-detection
+                type = "face"
+        
         if type == "face":
             result = await structured_predict(face_img=file, xray_img=None)
         elif type == "xray":
             result = await structured_predict(face_img=None, xray_img=file)
         else:
-            raise HTTPException(status_code=400, detail="Type must be 'face' or 'xray'")
+            raise HTTPException(status_code=400, detail="Type must be 'face', 'xray', or 'auto'")
         
         return StandardResponse(
             ok=result.ok,
@@ -505,19 +472,17 @@ async def predict_file(
         
     except Exception as e:
         logger.error(f"File prediction failed: {str(e)}")
-        return StandardResponse(
-            ok=False,
-            message=f"Analysis failed: {str(e)}"
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "details": str(e) if settings.DEBUG else "Internal server error"
+            }
         )
 
 @app.get("/img-proxy")
 async def image_proxy(url: str = Query(..., description="Image URL to proxy")):
-    """
-    Safe CORS image proxy for external images
-    
-    Fetches images from whitelisted hosts and streams them back with proper
-    headers to avoid CORS issues in the frontend.
-    """
+    """Safe CORS image proxy for external images"""
     if not validate_proxy_url(url):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -569,15 +534,7 @@ async def global_exception_handler(request, exc):
     )
 
 if __name__ == "__main__":
-    """
-    Development server entry point
-    
-    For production deployment:
-    - Use gunicorn or uvicorn with multiple workers
-    - Set host to 0.0.0.0 for container deployment
-    - Configure environment variables
-    - Enable access logs and structured logging
-    """
+    """Development server entry point"""
     import uvicorn
     
     uvicorn.run(

@@ -216,18 +216,20 @@ export function ResultsPage() {
   }
 
   // Handle both structured and legacy responses
-  let overallRisk: RiskLevel
+  let overallRisk: RiskLevel = 'unknown'
   let overallConfidence: number
   let explanation: string
   let modalities: ModalityResult[] = []
   let processingTime: number = 0
   let debugInfo: any = {}
+  let fusionMode: string = 'threshold'
 
   if (isStructuredResponse(results)) {
     // New structured format
-    overallRisk = results.final.overall_risk as RiskLevel
+    overallRisk = results.final.risk as RiskLevel
     overallConfidence = results.final.confidence
     explanation = results.final.explanation
+    fusionMode = results.final.fusion_mode || 'threshold'
     modalities = results.modalities
     processingTime = results.processing_time_ms
     debugInfo = results.debug
@@ -449,13 +451,59 @@ export function ResultsPage() {
           </Reveal>
 
           {/* Debug Information (Development Only) */}
-          {debugInfo && Object.keys(debugInfo).length > 0 && (
+          {debugInfo && Object.keys(debugInfo).length > 0 && import.meta.env.DEV && (
             <Reveal delay={0.7}>
               <Card className="border-slate-200 bg-slate-50">
                 <CardHeader>
-                  <CardTitle className="text-lg text-slate-700">Debug Information</CardTitle>
+                  <CardTitle className="text-lg text-slate-700 flex items-center gap-2">
+                    Debug Information
+                    <Badge variant="outline" className="text-xs">
+                      {fusionMode} fusion
+                    </Badge>
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
+                  <div className="space-y-4">
+                    {debugInfo.filenames && (
+                      <div>
+                        <h4 className="font-medium text-sm mb-2">Files Processed:</h4>
+                        <div className="flex flex-wrap gap-2">
+                          {debugInfo.filenames.map((filename: string, idx: number) => (
+                            <Badge key={idx} variant="outline" className="text-xs">
+                              {filename}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {debugInfo.models_used && debugInfo.models_used.length > 0 && (
+                      <div>
+                        <h4 className="font-medium text-sm mb-2">Models Used:</h4>
+                        <div className="flex flex-wrap gap-2">
+                          {debugInfo.models_used.map((model: string, idx: number) => (
+                            <Badge key={idx} variant="outline" className="text-xs">
+                              {model}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {debugInfo.roi_boxes && debugInfo.roi_boxes.length > 0 && (
+                      <div>
+                        <h4 className="font-medium text-sm mb-2">ROI Boxes:</h4>
+                        <div className="space-y-1">
+                          {debugInfo.roi_boxes.map((roi: any, idx: number) => (
+                            <div key={idx} className="text-xs text-slate-600">
+                              ROI {roi.roi_id}: [{roi.box.map((n: number) => n.toFixed(0)).join(', ')}]
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  
                   <pre className="text-xs text-slate-600 overflow-auto">
                     {JSON.stringify(debugInfo, null, 2)}
                   </pre>

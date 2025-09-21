@@ -27,49 +27,55 @@ class Settings(BaseModel):
     PORT: int = int(os.getenv("PORT", "5000"))
     DEBUG: bool = os.getenv("DEBUG", "true").lower() == "true"
     
+    # Ensemble configuration
+    USE_ENSEMBLE: bool = os.getenv("USE_ENSEMBLE", "true").lower() == "true"
+    FUSION_MODE: str = os.getenv("FUSION_MODE", "threshold")  # "threshold" or "discrete"
+    
     # CORS configuration
     ALLOWED_ORIGINS: List[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080"
-    ]
+        origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
+    ] if os.getenv("ALLOWED_ORIGINS") != "*" else ["*"]
     
     # File upload configuration
     MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "5"))
     ALLOWED_MIME_TYPES: List[str] = ["image/jpeg", "image/png", "image/webp"]
     STATIC_TTL_SECONDS: int = int(os.getenv("STATIC_TTL_SECONDS", "3600"))
     
-    # Model filenames (DO NOT CHANGE - these match your provided files)
+    # Model configuration
     GENDER_MODEL: str = "gender_classifier.h5"
-    
-    FACE_PCOS_MODELS: Dict[str, Dict] = {
-        "vgg16": {
-            "path": "face_model_A.h5",
-            "input_size": [224, 224],
-            "weight": 0.5
-        },
-        "resnet50": {
-            "path": "face_model_B.h5", 
-            "input_size": [224, 224],
-            "weight": 0.5
-        }
-    }
-    
-    XRAY_PCOS_MODELS: Dict[str, Dict] = {
-        "xray_a": {
-            "path": "xray_model_A.h5",
-            "input_size": [224, 224],
-            "weight": 0.5
-        },
-        "xray_b": {
-            "path": "xray_model_B.h5",
-            "input_size": [224, 224], 
-            "weight": 0.5
-        }
-    }
-    
     YOLO_MODEL: str = "bestv8.pt"
+    
+    # Ensemble weights for face models
+    FACE_ENSEMBLE_WEIGHTS: Dict[str, float] = {
+        "vgg16": float(os.getenv("FACE_VGG16_WEIGHT", "0.33")),
+        "resnet50": float(os.getenv("FACE_RESNET50_WEIGHT", "0.33")),
+        "efficientnetb0": float(os.getenv("FACE_EFFICIENTNET_WEIGHT", "0.34"))
+    }
+    
+    # Face model files
+    FACE_MODELS: Dict[str, str] = {
+        "vgg16": "face_model_vgg16.h5",
+        "resnet50": "face_model_resnet50.h5",
+        "efficientnetb0": "face_model_efficientnetb0.h5"
+    }
+    
+    # Ensemble weights for X-ray models
+    XRAY_ENSEMBLE_WEIGHTS: Dict[str, float] = {
+        "vgg16": float(os.getenv("XRAY_VGG16_WEIGHT", "0.33")),
+        "resnet50": float(os.getenv("XRAY_RESNET50_WEIGHT", "0.33")),
+        "efficientnetb0": float(os.getenv("XRAY_EFFICIENTNET_WEIGHT", "0.34"))
+    }
+    
+    # X-ray model files
+    XRAY_MODELS: Dict[str, str] = {
+        "vgg16": "xray_model_vgg16.h5",
+        "resnet50": "xray_model_resnet50.h5",
+        "efficientnetb0": "xray_model_efficientnetb0.h5"
+    }
+    
+    # Best single models (when USE_ENSEMBLE=False)
+    BEST_FACE_MODEL: str = "efficientnetb0"
+    BEST_XRAY_MODEL: str = "efficientnetb0"
     
     # Risk thresholds
     RISK_LOW_THRESHOLD: float = 0.33
@@ -78,7 +84,9 @@ class Settings(BaseModel):
     # Image proxy whitelist
     ALLOWED_PROXY_HOSTS: List[str] = [
         "images.pexels.com",
-        "example.com",
+        "images.unsplash.com",
+        "picsum.photos",
+        "via.placeholder.com",
         "localhost"
     ]
 
@@ -90,3 +98,12 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 FACE_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 XRAY_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 YOLO_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_risk_level(score: float) -> str:
+    """Classify risk level based on probability score"""
+    if score < settings.RISK_LOW_THRESHOLD:
+        return "low"
+    elif score < settings.RISK_HIGH_THRESHOLD:
+        return "moderate"
+    else:
+        return "high"

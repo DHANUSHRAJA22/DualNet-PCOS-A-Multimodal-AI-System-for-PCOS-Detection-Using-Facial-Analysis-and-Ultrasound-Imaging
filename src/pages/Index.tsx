@@ -119,11 +119,11 @@ export function IndexPage() {
       const formData = new FormData()
       
       if (faceImage) {
-        formData.append('face_img', faceImage.file, faceImage.file.name)
+        formData.append('face_img', faceImage.file)
       }
       
       if (xrayImage) {
-        formData.append('xray_img', xrayImage.file, xrayImage.file.name)
+        formData.append('xray_img', xrayImage.file)
       }
 
       const results = await postPredict(formData, true) // Use structured format
@@ -137,20 +137,18 @@ export function IndexPage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Analysis failed'
       
-      if (message.includes('ECONNREFUSED') || message.includes('fetch') || message.includes('NetworkError')) {
+      // Check for backend error format
+      if (message.includes('{"ok":false')) {
+        try {
+          const errorData = JSON.parse(message.substring(message.indexOf('{"ok":false')))
+          toast.error(`Analysis failed: ${errorData.details || errorData.message || 'Unknown error'}`)
+        } catch {
+          toast.error(`Analysis failed: ${message}`)
+        }
+      } else if (message.includes('ECONNREFUSED') || message.includes('fetch') || message.includes('NetworkError')) {
         showDiagnosticsDialog()
       } else {
-        // Parse backend error response
-        let errorMessage = message
-        try {
-          if (message.includes('{"ok":false')) {
-            const errorData = JSON.parse(message.substring(message.indexOf('{"ok":false')))
-            errorMessage = errorData.details || errorData.message || message
-          }
-        } catch {
-          // Use original message if parsing fails
-        }
-        toast.error(`Analysis failed: ${errorMessage}`)
+        toast.error(`Analysis failed: ${message}`)
       }
     } finally {
       setIsAnalyzing(false)

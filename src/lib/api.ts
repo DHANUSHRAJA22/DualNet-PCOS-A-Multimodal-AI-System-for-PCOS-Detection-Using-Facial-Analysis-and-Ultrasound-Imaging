@@ -47,9 +47,10 @@ export interface ModalityResult {
 }
 
 export interface FinalResult {
-  overall_risk: string
+  risk: string
   confidence: number
   explanation: string
+  fusion_mode: string
 }
 
 export interface StructuredPredictionResponse {
@@ -173,7 +174,11 @@ export async function postPredict(formData: FormData, useStructured: boolean = t
     let errorMessage = 'Analysis failed'
     try {
       const errorData = await response.json()
-      errorMessage = errorData.details || errorData.message || errorData.detail || errorMessage
+      if (errorData.ok === false) {
+        errorMessage = errorData.details || errorMessage
+      } else {
+        errorMessage = errorData.message || errorData.detail || errorMessage
+      }
     } catch {
       errorMessage = await response.text() || errorMessage
     }
@@ -274,7 +279,7 @@ export function convertToLegacyFormat(structured: StructuredPredictionResponse):
   
   // Final results
   legacy.combined = structured.final.explanation
-  legacy.overall_risk = structured.final.overall_risk
+  legacy.overall_risk = structured.final.risk
   legacy.message = 'ok'
   
   return legacy
