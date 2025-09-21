@@ -14,6 +14,7 @@ interface ResultCardProps {
   visualizationImage?: string
   foundLabels?: string[]
   riskLevel: 'low' | 'moderate' | 'high' | 'unknown'
+  confidence?: number // Overall confidence from final result
   className?: string
 }
 
@@ -51,6 +52,7 @@ export function ResultCard({
   visualizationImage,
   foundLabels,
   riskLevel,
+  confidence,
   className,
 }: ResultCardProps) {
   return (
@@ -92,6 +94,7 @@ export function ResultCard({
             scores={scores}
             prediction={prediction}
             analysisType={title.toLowerCase().includes('face') ? 'face' : 'xray'}
+            confidence={confidence}
           />
 
           {/* Found Labels */}

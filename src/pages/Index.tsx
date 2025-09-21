@@ -25,7 +25,7 @@ import { MedicalDisclaimer } from '@/components/MedicalDisclaimer'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { BackendStatus } from '@/components/BackendStatus'
 import { SampleImages } from '@/components/SampleImages'
-import { resolveApiBase, pingHealth, postPredict, type HealthStatus } from '@/lib/api'
+import { resolveApiBase, pingHealth, postPredict, convertToLegacyFormat, isStructuredResponse, type HealthStatus } from '@/lib/api'
 import { toast } from 'sonner'
 import type { ProcessedImage } from '@/lib/image'
 
@@ -93,6 +93,16 @@ export function IndexPage() {
       return
     }
 
+    // Validate file sizes before sending
+    const maxSize = 5 * 1024 * 1024 // 5MB
+    if (faceImage && faceImage.size > maxSize) {
+      toast.error(`Face image is too large (${(faceImage.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 5MB.`)
+      return
+    }
+    if (xrayImage && xrayImage.size > maxSize) {
+      toast.error(`X-ray image is too large (${(xrayImage.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 5MB.`)
+      return
+    }
     // Pre-check backend health
     const currentStatus = await pingHealth()
     setBackendStatus(currentStatus)
@@ -116,7 +126,13 @@ export function IndexPage() {
         formData.append('xray_img', xrayImage.file)
       }
 
-      const results = await postPredict(formData)
+      const results = await postPredict(formData, true) // Use structured format
+      
+      // Convert to legacy format for existing Results page
+      const legacyResults = isStructuredResponse(results) 
+        ? convertToLegacyFormat(results)
+        : results
+      
       navigate('/results', { state: { results } })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Analysis failed'

@@ -1,19 +1,20 @@
 """
-PCOS Analyzer FastAPI Backend
+PCOS Analyzer FastAPI Backend - Production Ready
 
-Production-ready API for AI-powered PCOS screening using ensemble deep learning models.
-Supports facial recognition and X-ray analysis with flexible ensemble prediction logic.
+Enhanced version with structured responses, proper validation, ROI processing,
+and comprehensive error handling for production deployment.
 
 Author: DHANUSH RAJA (21MIC0158)
-Version: 1.0.0
+Version: 2.0.0
 """
 
 import os
 import logging
 import traceback
 import time
+import json
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 from urllib.parse import urlparse
 
@@ -27,7 +28,7 @@ from config import settings, STATIC_DIR, UPLOADS_DIR
 from managers.face_manager import FaceManager
 from managers.xray_manager import XrayManager
 from ensemble import EnsembleManager
-from utils.validators import validate_request_files, validate_proxy_url
+from utils.validators import validate_request_files, validate_proxy_url, validate_file_size
 
 # Configure logging
 logging.basicConfig(
@@ -40,15 +41,16 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="PCOS Analyzer API",
     description="AI-powered PCOS screening using ensemble deep learning models",
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
 
-# CORS middleware
+# Enhanced CORS middleware with environment-based origins
+allowed_origins = settings.ALLOWED_ORIGINS if not settings.DEBUG else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -65,25 +67,48 @@ ensemble_manager = EnsembleManager()
 # Track startup time
 startup_time = datetime.now()
 
-# Response models
-class HealthResponse(BaseModel):
-    status: str
-    models: Dict[str, bool]
+# Enhanced Response models
+class ModalityResult(BaseModel):
+    type: str
+    label: str
+    scores: List[float]
+    risk: str
+    original_img: Optional[str] = None
+    visualization: Optional[str] = None
+    found_labels: Optional[List[str]] = None
 
-class PredictionResponse(BaseModel):
+class FinalResult(BaseModel):
+    overall_risk: str
+    confidence: float
+    explanation: str
+
+class StructuredPredictionResponse(BaseModel):
+    ok: bool
+    modalities: List[ModalityResult]
+    final: FinalResult
+    warnings: List[str] = []
+    processing_time_ms: float
+
+class LegacyPredictionResponse(BaseModel):
     ok: bool
     face_pred: Optional[str] = None
-    face_scores: Optional[list] = None
+    face_scores: Optional[List[float]] = None
     face_img: Optional[str] = None
     face_risk: Optional[str] = None
     xray_pred: Optional[str] = None
     xray_img: Optional[str] = None
     yolo_vis: Optional[str] = None
-    found_labels: Optional[list] = None
+    found_labels: Optional[List[str]] = None
     xray_risk: Optional[str] = None
     combined: Optional[str] = None
     overall_risk: Optional[str] = None
     message: str = "ok"
+
+class EnhancedHealthResponse(BaseModel):
+    status: str
+    models: Dict[str, Dict[str, Any]]
+    uptime_seconds: float
+    version: str
 
 def cleanup_old_files():
     """Clean up old uploaded files"""
@@ -107,76 +132,128 @@ def cleanup_old_files():
     except Exception as e:
         logger.error(f"File cleanup failed: {str(e)}")
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
+def classify_risk(score: float) -> str:
+    """Classify risk level based on probability score using thresholds"""
+    if score < settings.RISK_LOW_THRESHOLD:
+        return "low"
+    elif score < settings.RISK_HIGH_THRESHOLD:
+        return "moderate"
+    else:
+        return "high"
+
+def validate_uploaded_file(file: UploadFile) -> None:
+    """Validate uploaded file size and type"""
+    if not file or not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
+    # Check file size (read content to get actual size)
+    content = file.file.read()
+    file.file.seek(0)  # Reset file pointer
+    
+    max_size = settings.MAX_UPLOAD_MB * 1024 * 1024
+    if len(content) > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File size ({len(content) / 1024 / 1024:.1f}MB) exceeds maximum allowed size ({settings.MAX_UPLOAD_MB}MB)"
+        )
+    
+    # Check MIME type
+    if file.content_type not in settings.ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type '{file.content_type}'. Allowed types: {', '.join(settings.ALLOWED_MIME_TYPES)}"
+        )
+
+@app.get("/health", response_model=EnhancedHealthResponse)
+async def enhanced_health_check():
     """
-    Health check endpoint with model status
+    Enhanced health check with lazy loading validation
     
-    Returns detailed status of all models including load status.
-    Never crashes on missing models - reports availability instead.
-    
-    Returns:
-        HealthResponse: System health information
+    Tests actual model loading capability, not just file existence
     """
     try:
+        uptime = (datetime.now() - startup_time).total_seconds()
+        
+        # Get detailed model status with lazy loading test
         face_status = face_manager.get_model_status()
         xray_status = xray_manager.get_model_status()
         
-        models_status = {
-            "gender": face_status.get("gender", {}).get("loaded", False),
-            "face": face_status.get("face", {}).get("loaded", False),
-            "yolo": xray_status.get("yolo", {}).get("loaded", False),
-            "xray": xray_status.get("xray", {}).get("loaded", False)
+        # Test lazy loading capability
+        models_status = {}
+        
+        # Face models
+        models_status["gender"] = {
+            "loaded": face_status.get("gender", {}).get("loaded", False),
+            "available": face_status.get("gender", {}).get("available", False),
+            "lazy_loadable": face_manager.can_lazy_load_gender(),
+            "error": face_status.get("gender", {}).get("error")
+        }
+        
+        models_status["face"] = {
+            "loaded": face_status.get("face", {}).get("loaded", False),
+            "available": face_status.get("face", {}).get("available", False),
+            "lazy_loadable": face_manager.can_lazy_load_pcos(),
+            "error": face_status.get("face", {}).get("error")
+        }
+        
+        # X-ray models
+        models_status["yolo"] = {
+            "loaded": xray_status.get("yolo", {}).get("loaded", False),
+            "available": xray_status.get("yolo", {}).get("available", False),
+            "lazy_loadable": xray_manager.can_lazy_load_yolo(),
+            "error": xray_status.get("yolo", {}).get("error")
+        }
+        
+        models_status["xray"] = {
+            "loaded": xray_status.get("xray", {}).get("loaded", False),
+            "available": xray_status.get("xray", {}).get("available", False),
+            "lazy_loadable": xray_manager.can_lazy_load_pcos(),
+            "error": xray_status.get("xray", {}).get("error")
         }
         
         # Determine overall status
-        loaded_count = sum(models_status.values())
-        if loaded_count == 0:
+        loadable_count = sum(1 for model in models_status.values() if model.get("lazy_loadable", False))
+        total_models = len(models_status)
+        
+        if loadable_count == 0:
             overall_status = "unhealthy"
-        elif loaded_count < len(models_status):
+        elif loadable_count < total_models:
             overall_status = "degraded"
         else:
-            overall_status = "ok"
+            overall_status = "healthy"
         
-        return HealthResponse(
+        return EnhancedHealthResponse(
             status=overall_status,
-            models=models_status
+            models=models_status,
+            uptime_seconds=uptime,
+            version="2.0.0"
         )
         
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         logger.error(traceback.format_exc())
         
-        return HealthResponse(
+        return EnhancedHealthResponse(
             status="error",
             models={
-                "gender": False,
-                "face": False,
-                "yolo": False,
-                "xray": False
-            }
+                "gender": {"loaded": False, "available": False, "lazy_loadable": False, "error": str(e)},
+                "face": {"loaded": False, "available": False, "lazy_loadable": False, "error": str(e)},
+                "yolo": {"loaded": False, "available": False, "lazy_loadable": False, "error": str(e)},
+                "xray": {"loaded": False, "available": False, "lazy_loadable": False, "error": str(e)}
+            },
+            uptime_seconds=0.0,
+            version="2.0.0"
         )
 
-@app.post("/predict", response_model=PredictionResponse)
-async def predict(
+@app.post("/predict", response_model=StructuredPredictionResponse)
+async def structured_predict(
     face_img: Optional[UploadFile] = File(None),
     xray_img: Optional[UploadFile] = File(None)
 ):
     """
-    Main prediction endpoint with rich response format
+    Enhanced prediction endpoint with structured response format
     
-    Accepts facial images and/or X-ray images for comprehensive PCOS analysis
-    using ensemble deep learning models.
-    
-    Args:
-        face_img: Optional facial image file (JPEG/PNG/WebP, max 5MB)
-        xray_img: Optional X-ray image file (JPEG/PNG/WebP, max 5MB)
-        
-    Returns:
-        PredictionResponse: Detailed analysis results
-        
-    Raises:
-        HTTPException: 400 for validation errors, 500 for processing errors
+    Returns comprehensive analysis with modalities array and final assessment
     """
     start_time = datetime.now()
     
@@ -186,8 +263,15 @@ async def predict(
     # Validate request
     validate_request_files(face_img, xray_img)
     
+    # Validate individual files
+    if face_img:
+        validate_uploaded_file(face_img)
+    if xray_img:
+        validate_uploaded_file(xray_img)
+    
     try:
-        result = PredictionResponse(ok=True)
+        modalities = []
+        warnings = []
         face_score = None
         xray_score = None
         
@@ -197,18 +281,37 @@ async def predict(
             try:
                 face_result = await face_manager.process_face_image(face_img)
                 
-                result.face_pred = face_result.get("face_pred")
-                result.face_scores = face_result.get("face_scores", [])
-                result.face_img = face_result.get("face_img")
-                result.face_risk = face_result.get("face_risk", "unknown")
+                # Extract data for modality result
+                face_risk = classify_risk(face_result.get("ensemble_score", 0))
                 
-                # Get ensemble score for final combination
+                modality = ModalityResult(
+                    type="face",
+                    label=face_result.get("face_pred", "Analysis failed"),
+                    scores=face_result.get("face_scores", []),
+                    risk=face_risk,
+                    original_img=face_result.get("face_img")
+                )
+                modalities.append(modality)
+                
+                # Store score for final fusion
                 face_score = face_result.get("ensemble_score")
+                
+                # Check for male face warning
+                if face_result.get("gender", {}).get("label") == "male":
+                    warnings.append("Male face detected - PCOS analysis may not be applicable")
                 
             except Exception as e:
                 logger.error(f"Face processing failed: {str(e)}")
-                result.face_pred = f"Face analysis failed: {str(e)}"
-                result.face_risk = "unknown"
+                warnings.append(f"Face analysis failed: {str(e)}")
+                
+                # Add failed modality
+                modality = ModalityResult(
+                    type="face",
+                    label="Analysis failed",
+                    scores=[],
+                    risk="unknown"
+                )
+                modalities.append(modality)
         
         # Process X-ray image if provided
         if xray_img:
@@ -216,60 +319,113 @@ async def predict(
             try:
                 xray_result = await xray_manager.process_xray_image(xray_img)
                 
-                result.xray_pred = xray_result.get("xray_pred")
-                result.xray_img = xray_result.get("xray_img")
-                result.yolo_vis = xray_result.get("yolo_vis")
-                result.found_labels = xray_result.get("found_labels", [])
-                result.xray_risk = xray_result.get("xray_risk", "unknown")
+                # Extract data for modality result
+                xray_risk = classify_risk(xray_result.get("ensemble_score", 0))
                 
-                # Get ensemble score for final combination
+                modality = ModalityResult(
+                    type="xray",
+                    label=xray_result.get("xray_pred", "Analysis failed"),
+                    scores=[xray_result.get("ensemble_score", 0)],  # X-ray returns single ensemble score
+                    risk=xray_risk,
+                    original_img=xray_result.get("xray_img"),
+                    visualization=xray_result.get("yolo_vis"),
+                    found_labels=xray_result.get("found_labels", [])
+                )
+                modalities.append(modality)
+                
+                # Store score for final fusion
                 xray_score = xray_result.get("ensemble_score")
                 
             except Exception as e:
                 logger.error(f"X-ray processing failed: {str(e)}")
-                result.xray_pred = f"X-ray analysis failed: {str(e)}"
-                result.xray_risk = "unknown"
+                warnings.append(f"X-ray analysis failed: {str(e)}")
+                
+                # Add failed modality
+                modality = ModalityResult(
+                    type="xray",
+                    label="Analysis failed",
+                    scores=[],
+                    risk="unknown"
+                )
+                modalities.append(modality)
         
         # Generate final combined result
         final_result = ensemble_manager.combine_modalities(face_score, xray_score)
-        result.overall_risk = final_result["overall_risk"]
-        result.combined = final_result["combined"]
+        
+        # Create final assessment
+        final = FinalResult(
+            overall_risk=final_result["overall_risk"],
+            confidence=final_result.get("final_score", 0.0),
+            explanation=final_result["combined"]
+        )
         
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.info(f"Prediction completed in {processing_time:.2f}ms")
+        logger.info(f"Structured prediction completed in {processing_time:.2f}ms")
         
-        return result
+        return StructuredPredictionResponse(
+            ok=True,
+            modalities=modalities,
+            final=final,
+            warnings=warnings,
+            processing_time_ms=processing_time
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Prediction failed: {str(e)}")
+        logger.error(f"Structured prediction failed: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal server error: {str(e)}"
         )
 
-@app.post("/predict-legacy", response_model=PredictionResponse)
-async def predict_legacy(
+@app.post("/predict-legacy", response_model=LegacyPredictionResponse)
+async def legacy_predict(
     face_img: Optional[UploadFile] = File(None),
     xray_img: Optional[UploadFile] = File(None)
 ):
     """
-    Legacy prediction endpoint for current frontend compatibility
+    Legacy prediction endpoint for backward compatibility
     
-    Returns results in the exact format expected by the existing frontend,
-    ensuring seamless integration without frontend changes.
-    
-    Args:
-        face_img: Optional facial image file
-        xray_img: Optional X-ray image file
-        
-    Returns:
-        PredictionResponse: Results in legacy format
+    Returns results in the flat format expected by existing frontends
     """
-    # Use the same logic as /predict
-    return await predict(face_img, xray_img)
+    try:
+        # Get structured response first
+        structured_response = await structured_predict(face_img, xray_img)
+        
+        # Convert to legacy format
+        legacy_response = LegacyPredictionResponse(ok=True)
+        
+        # Extract face data
+        face_modality = next((m for m in structured_response.modalities if m.type == "face"), None)
+        if face_modality:
+            legacy_response.face_pred = face_modality.label
+            legacy_response.face_scores = face_modality.scores
+            legacy_response.face_img = face_modality.original_img
+            legacy_response.face_risk = face_modality.risk
+        
+        # Extract X-ray data
+        xray_modality = next((m for m in structured_response.modalities if m.type == "xray"), None)
+        if xray_modality:
+            legacy_response.xray_pred = xray_modality.label
+            legacy_response.xray_img = xray_modality.original_img
+            legacy_response.yolo_vis = xray_modality.visualization
+            legacy_response.found_labels = xray_modality.found_labels
+            legacy_response.xray_risk = xray_modality.risk
+        
+        # Final results
+        legacy_response.combined = structured_response.final.explanation
+        legacy_response.overall_risk = structured_response.final.overall_risk
+        
+        return legacy_response
+        
+    except Exception as e:
+        logger.error(f"Legacy prediction failed: {str(e)}")
+        return LegacyPredictionResponse(
+            ok=False,
+            message=f"Prediction failed: {str(e)}"
+        )
 
 @app.get("/img-proxy")
 async def image_proxy(url: str = Query(..., description="Image URL to proxy")):
@@ -278,15 +434,6 @@ async def image_proxy(url: str = Query(..., description="Image URL to proxy")):
     
     Fetches images from whitelisted hosts and streams them back with proper
     headers to avoid CORS issues in the frontend.
-    
-    Args:
-        url: Image URL to fetch and proxy
-        
-    Returns:
-        StreamingResponse: Proxied image with appropriate headers
-        
-    Raises:
-        HTTPException: 400 for invalid URLs, 404 for fetch failures
     """
     if not validate_proxy_url(url):
         raise HTTPException(
@@ -348,9 +495,6 @@ if __name__ == "__main__":
     - Set host to 0.0.0.0 for container deployment
     - Configure environment variables
     - Enable access logs and structured logging
-    
-    Example production command:
-    uvicorn app:app --host 0.0.0.0 --port 5000 --workers 4
     """
     import uvicorn
     

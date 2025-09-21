@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { pingHealth, resolveApiBase, type HealthStatus } from '@/lib/api'
+import { pingHealth, resolveApiBase, getEnhancedHealth, type HealthStatus } from '@/lib/api'
 import { toast } from 'sonner'
 
 interface BackendStatusProps {
@@ -18,6 +18,7 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
   const [isChecking, setIsChecking] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [apiUrl, setApiUrl] = useState('')
+  const [healthDetails, setHealthDetails] = useState<any>(null)
 
   const checkHealth = async () => {
     setIsChecking(true)
@@ -25,9 +26,20 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
       const healthStatus = await pingHealth()
       setStatus(healthStatus)
       onStatusChange?.(healthStatus)
+      
+      // Get detailed health info if online
+      if (healthStatus === 'online') {
+        try {
+          const details = await getEnhancedHealth()
+          setHealthDetails(details)
+        } catch (error) {
+          console.warn('Could not fetch detailed health info:', error)
+        }
+      }
     } catch (error) {
       setStatus('unreachable')
       onStatusChange?.('unreachable')
+      setHealthDetails(null)
     } finally {
       setIsChecking(false)
     }
@@ -107,6 +119,12 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
           )}
           {isChecking ? 'Checking...' : config.label}
         </Badge>
+        
+        {healthDetails && status === 'online' && (
+          <Badge variant="outline" className="text-xs">
+            v{healthDetails.version} • {Math.round(healthDetails.uptime_seconds)}s uptime
+          </Badge>
+        )}
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

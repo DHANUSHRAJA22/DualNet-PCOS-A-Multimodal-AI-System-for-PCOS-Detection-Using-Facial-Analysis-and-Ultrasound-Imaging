@@ -8,12 +8,14 @@ interface ConfidenceVisualizationProps {
   scores?: number[]
   prediction: string
   analysisType: 'face' | 'xray'
+  confidence?: number // Optional overall confidence from final result
 }
 
-export function ConfidenceVisualization({ scores, prediction, analysisType }: ConfidenceVisualizationProps) {
+export function ConfidenceVisualization({ scores, prediction, analysisType, confidence }: ConfidenceVisualizationProps) {
   if (!scores || scores.length < 2) return null
 
-  const confidence = Math.max(...scores) * 100
+  // Use provided confidence or calculate from scores
+  const displayConfidence = confidence !== undefined ? confidence * 100 : Math.max(...scores) * 100
   const nonPcosScore = scores[0] * 100
   const pcosScore = scores[1] * 100
 
@@ -24,7 +26,7 @@ export function ConfidenceVisualization({ scores, prediction, analysisType }: Co
     return { level: 'Low', color: 'from-slate-400 to-gray-500', textColor: 'text-slate-600' }
   }
 
-  const confidenceInfo = getConfidenceLevel(confidence)
+  const confidenceInfo = getConfidenceLevel(displayConfidence)
 
   return (
     <motion.div
@@ -38,7 +40,7 @@ export function ConfidenceVisualization({ scores, prediction, analysisType }: Co
             <Brain className="h-5 w-5 text-indigo-600" />
             AI Confidence Analysis
             <Badge className={`ml-auto bg-gradient-to-r ${confidenceInfo.color} text-white`}>
-              {confidence.toFixed(1)}% Confidence
+              {displayConfidence.toFixed(1)}% Confidence
             </Badge>
           </CardTitle>
         </CardHeader>
@@ -54,12 +56,12 @@ export function ConfidenceVisualization({ scores, prediction, analysisType }: Co
             </div>
             <div className="relative">
               <Progress 
-                value={confidence} 
+                value={displayConfidence} 
                 className="h-4 bg-slate-200"
               />
               <div 
                 className={`absolute top-0 left-0 h-4 rounded-full bg-gradient-to-r ${confidenceInfo.color} transition-all duration-1000 ease-out`}
-                style={{ width: `${confidence}%` }}
+                style={{ width: `${displayConfidence}%` }}
               />
             </div>
           </div>

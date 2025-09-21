@@ -9,7 +9,7 @@ import { MedicalDisclaimer } from '@/components/MedicalDisclaimer'
 import { RiskGauge } from '@/components/RiskGauge'
 import { AIPerformanceMetrics } from '@/components/AIPerformanceMetrics'
 import { withBase } from '@/lib/api'
-import type { PredictionResponse } from '@/lib/api'
+import type { LegacyPredictionResponse } from '@/lib/api'
 
 type RiskLevel = 'low' | 'moderate' | 'high' | 'unknown'
 
@@ -76,7 +76,7 @@ const Reveal = ({ children, delay = 0 }: { children: React.ReactNode; delay?: nu
 export function ResultsPage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const results = location.state?.results as PredictionResponse
+  const results = location.state?.results as LegacyPredictionResponse
 
   if (!results) {
     return (
@@ -101,9 +101,14 @@ export function ResultsPage() {
     )
   }
 
-  const overallRisk = getRiskLevel(results.combined)
+  const overallRisk = results.overall_risk as RiskLevel || getRiskLevel(results.combined)
   const faceSummary = getAnalysisSummary(results.face_pred)
   const xraySummary = getAnalysisSummary(results.xray_pred)
+  
+  // Calculate overall confidence from available scores
+  const overallConfidence = results.face_scores && results.face_scores.length > 0 
+    ? Math.max(...results.face_scores) 
+    : 0.75 // Default confidence if no scores available
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50">
@@ -215,7 +220,7 @@ export function ResultsPage() {
             <div className="flex justify-center">
               <RiskGauge 
                 riskLevel={overallRisk} 
-                confidence={results.face_scores ? Math.max(...results.face_scores) * 100 : 0}
+                confidence={overallConfidence}
                 className="max-w-sm"
               />
             </div>
@@ -230,7 +235,8 @@ export function ResultsPage() {
                   prediction={results.face_pred}
                   scores={results.face_scores}
                   originalImage={results.face_img}
-                  riskLevel={faceSummary.status === 'normal' ? 'low' : 'moderate'}
+                  riskLevel={results.face_risk as RiskLevel || (faceSummary.status === 'normal' ? 'low' : 'moderate')}
+                  confidence={overallConfidence}
                 />
               </Reveal>
             )}
@@ -243,7 +249,8 @@ export function ResultsPage() {
                   originalImage={results.xray_img}
                   visualizationImage={results.yolo_vis}
                   foundLabels={results.found_labels}
-                  riskLevel={xraySummary.status === 'normal' ? 'low' : 'moderate'}
+                  riskLevel={results.xray_risk as RiskLevel || (xraySummary.status === 'normal' ? 'low' : 'moderate')}
+                  confidence={overallConfidence}
                 />
               </Reveal>
             )}

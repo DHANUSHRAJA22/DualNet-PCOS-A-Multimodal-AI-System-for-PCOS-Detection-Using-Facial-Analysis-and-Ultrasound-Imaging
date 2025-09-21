@@ -20,6 +20,28 @@ class ValidationError(Exception):
     """Custom exception for validation errors"""
     pass
 
+def validate_file_size(file_path: str, max_mb: float = None) -> None:
+    """
+    Validate file size
+    
+    Args:
+        file_path: Path to file to check
+        max_mb: Maximum size in MB (defaults to settings)
+        
+    Raises:
+        ValidationError: If file is too large
+    """
+    if max_mb is None:
+        max_mb = settings.MAX_UPLOAD_MB
+    
+    max_size = int(max_mb * 1024 * 1024)
+    file_size = os.path.getsize(file_path)
+    
+    if file_size > max_size:
+        raise ValidationError(
+            f"File size ({file_size / 1024 / 1024:.1f}MB) exceeds maximum allowed size ({max_mb}MB)"
+        )
+
 async def validate_image(
     upload: UploadFile,
     allowed_types: Optional[List[str]] = None,

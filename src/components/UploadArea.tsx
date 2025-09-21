@@ -40,6 +40,12 @@ export function UploadArea({
       return
     }
 
+    // Validate file size (5MB limit)
+    const maxSize = 5 * 1024 * 1024 // 5MB
+    if (file.size > maxSize) {
+      toast.error(`File size (${(file.size / 1024 / 1024).toFixed(1)}MB) exceeds maximum allowed size (5MB)`)
+      return
+    }
     setIsProcessing(true)
     try {
       const processed = await fixImageOrientation(file)
@@ -154,7 +160,7 @@ export function UploadArea({
                       Click to upload or drag & drop
                     </p>
                     <p className="text-xs text-muted-foreground mb-4">
-                      Supports JPEG, PNG, WebP
+                      Supports JPEG, PNG, WebP (max 5MB)
                     </p>
                     <div className="flex gap-2 justify-center">
                       <Button onClick={handleUploadClick} variant="outline" size="sm">

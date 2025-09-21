@@ -48,6 +48,18 @@ class FaceManager:
         
         self._load_models()
     
+    def can_lazy_load_gender(self) -> bool:
+        """Check if gender model can be lazy loaded"""
+        gender_path = FACE_MODELS_DIR / settings.GENDER_MODEL
+        return gender_path.exists() and gender_path.is_file()
+    
+    def can_lazy_load_pcos(self) -> bool:
+        """Check if PCOS models can be lazy loaded"""
+        return any(
+            (FACE_MODELS_DIR / config["path"]).exists() 
+            for config in settings.FACE_PCOS_MODELS.values()
+        )
+    
     def _load_models(self) -> None:
         """Load all facial analysis models"""
         logger.info("Loading facial analysis models...")

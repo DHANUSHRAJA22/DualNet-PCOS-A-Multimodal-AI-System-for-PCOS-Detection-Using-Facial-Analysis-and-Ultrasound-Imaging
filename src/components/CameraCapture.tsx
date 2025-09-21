@@ -91,6 +91,13 @@ export function CameraCapture({ open, onOpenChange, onCapture }: CameraCapturePr
 
     canvasRef.current.toBlob((blob) => {
       if (blob) {
+        // Validate blob size (5MB limit)
+        const maxSize = 5 * 1024 * 1024 // 5MB
+        if (blob.size > maxSize) {
+          toast.error(`Captured image is too large (${(blob.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 5MB.`)
+          return
+        }
+        
         const file = new File([blob], `camera-capture-${Date.now()}.jpg`, {
           type: 'image/jpeg',
           lastModified: Date.now(),

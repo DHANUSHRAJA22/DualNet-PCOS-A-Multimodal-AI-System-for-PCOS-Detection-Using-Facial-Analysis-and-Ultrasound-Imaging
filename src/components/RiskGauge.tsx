@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 
 interface RiskGaugeProps {
   riskLevel: 'low' | 'moderate' | 'high' | 'unknown'
-  confidence?: number
+  confidence?: number // Should be 0-1, will be converted to percentage
   className?: string
 }
 
@@ -142,13 +142,13 @@ export function RiskGauge({ riskLevel, confidence = 0, className }: RiskGaugePro
           <div className="bg-white/70 p-3 rounded-lg border border-slate-200">
             <div className="flex justify-between items-center mb-2">
               <span className="text-sm font-medium text-slate-700">AI Confidence</span>
-              <span className="text-sm font-bold text-indigo-600">{confidence.toFixed(1)}%</span>
+              <span className="text-sm font-bold text-indigo-600">{(confidence * 100).toFixed(1)}%</span>
             </div>
             <div className="w-full bg-slate-200 rounded-full h-2">
               <motion.div
                 className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2 rounded-full"
                 initial={{ width: 0 }}
-                animate={{ width: `${confidence}%` }}
+                animate={{ width: `${confidence * 100}%` }}
                 transition={{ duration: 1, delay: 0.5 }}
               />
             </div>

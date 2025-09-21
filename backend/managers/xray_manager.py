@@ -57,6 +57,20 @@ class XrayManager:
         
         self._load_models()
     
+    def can_lazy_load_yolo(self) -> bool:
+        """Check if YOLO model can be lazy loaded"""
+        if not YOLO_AVAILABLE:
+            return False
+        yolo_path = YOLO_MODELS_DIR / settings.YOLO_MODEL
+        return yolo_path.exists() and yolo_path.is_file()
+    
+    def can_lazy_load_pcos(self) -> bool:
+        """Check if PCOS models can be lazy loaded"""
+        return any(
+            (XRAY_MODELS_DIR / config["path"]).exists() 
+            for config in settings.XRAY_PCOS_MODELS.values()
+        )
+    
     def _load_models(self) -> None:
         """Load all X-ray analysis models"""
         logger.info("Loading X-ray analysis models...")
@@ -354,23 +368,25 @@ class XrayManager:
             
             # Process ROIs if detections found
             if detections:
-                all_roi_predictions = {}
+                roi_predictions_list = []
                 
                 for detection in detections:
                     roi_predictions = await self.predict_pcos_roi(image_bytes, detection["box"])
-                    
-                    # Accumulate predictions for overall ensemble
-                    for model_name, score in roi_predictions.items():
-                        if model_name not in all_roi_predictions:
-                            all_roi_predictions[model_name] = []
-                        all_roi_predictions[model_name].append(score)
+                    if roi_predictions:
+                        roi_predictions_list.append(roi_predictions)
                 
-                # Average ROI predictions for overall score
-                if all_roi_predictions:
-                    averaged_predictions = {
-                        model_name: sum(scores) / len(scores)
-                        for model_name, scores in all_roi_predictions.items()
-                    }
+                # Ensemble ROI predictions
+                if roi_predictions_list:
+                    # Average predictions across all ROIs
+                    all_models = set()
+                    for roi_pred in roi_predictions_list:
+                        all_models.update(roi_pred.keys())
+                    
+                    averaged_predictions = {}
+                    for model_name in all_models:
+                        scores = [roi_pred.get(model_name, 0) for roi_pred in roi_predictions_list if model_name in roi_pred]
+                        if scores:
+                            averaged_predictions[model_name] = sum(scores) / len(scores)
                     
                     # Extract weights for ensemble
                     weights = {name: config["weight"] for name, config in settings.XRAY_PCOS_MODELS.items()}
