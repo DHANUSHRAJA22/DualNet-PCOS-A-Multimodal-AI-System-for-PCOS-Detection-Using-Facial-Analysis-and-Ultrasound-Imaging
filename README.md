@@ -250,13 +250,7 @@ Safe CORS proxy for external images
 4. **Global Ensemble**: Average across all ROIs
 5. **Fallback**: Full image classification if no detections
 6. **Metadata Collection**: Store detections, ROI details, and ensemble info
-
-### Risk Classification
-- **Low Risk**: < 0.33 probability (configurable)
 - **Moderate Risk**: 0.33-0.66 probability (configurable)
-- **High Risk**: ≥ 0.66 probability (configurable)
-
-## 🧪 Testing
 
 ### Automated Testing
 
