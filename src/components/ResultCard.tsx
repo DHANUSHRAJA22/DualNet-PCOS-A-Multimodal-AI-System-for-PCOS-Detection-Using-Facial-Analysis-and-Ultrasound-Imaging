@@ -116,6 +116,49 @@ export function ResultCard({
             ensemble={modality?.ensemble}
           />
 
+          {/* Per-Model Scores Display */}
+          {modality?.per_model && Object.keys(modality.per_model).length > 0 && (
+            <div>
+              <h4 className="font-semibold mb-3 text-slate-800">Individual Model Scores</h4>
+              <div className="bg-white/70 rounded-lg p-4 border border-slate-200">
+                <div className="space-y-3">
+                  {Object.entries(modality.per_model).map(([modelName, score]) => (
+                    <div key={modelName} className="flex justify-between items-center">
+                      <span className="text-sm font-medium capitalize text-slate-700">
+                        {modelName.replace('_', ' ')}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <div className="w-20 bg-slate-200 rounded-full h-2">
+                          <div
+                            className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2 rounded-full transition-all duration-1000"
+                            style={{ width: `${(score as number) * 100}%` }}
+                          />
+                        </div>
+                        <Badge variant="outline" className="font-mono text-xs">
+                          {((score as number) * 100).toFixed(1)}%
+                        </Badge>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {modality.ensemble && (
+                    <div className="pt-3 border-t border-slate-200">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-semibold text-slate-800">Ensemble Result</span>
+                        <Badge className="bg-gradient-to-r from-indigo-500 to-purple-500 text-white">
+                          {(modality.ensemble.score * 100).toFixed(1)}%
+                        </Badge>
+                      </div>
+                      <div className="text-xs text-slate-600 mt-1">
+                        Method: {modality.ensemble.method} • Models: {modality.ensemble.models_used}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Found Labels */}
           {foundLabels && foundLabels.length > 0 && (
             <div>

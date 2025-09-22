@@ -1,6 +1,6 @@
 import { useLocation, Navigate, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowLeft, Brain, ScanLine, CheckCircle, AlertTriangle, TrendingUp, Eye, BarChart3 } from 'lucide-react'
+import { ArrowLeft, Brain, ScanLine, CheckCircle, AlertTriangle, TrendingUp, Eye, BarChart3, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -425,6 +425,60 @@ export function ResultsPage() {
               </Reveal>
             ))}
           </div>
+
+          {/* Ensemble Configuration Display */}
+          {debugInfo && Object.keys(debugInfo).length > 0 && (
+            <Reveal delay={0.45}>
+              <Card className="border-slate-200 bg-slate-50">
+                <CardHeader>
+                  <CardTitle className="text-lg text-slate-700 flex items-center gap-2">
+                    <Activity className="h-5 w-5" />
+                    Ensemble Configuration
+                    <Badge variant="outline" className="text-xs">
+                      {debugInfo.fusion_mode} fusion • {debugInfo.use_ensemble ? 'Ensemble' : 'Single Model'}
+                    </Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {debugInfo.weights && Object.keys(debugInfo.weights).length > 0 && (
+                      <div>
+                        <h4 className="font-medium text-sm mb-2">Model Weights:</h4>
+                        <div className="space-y-2">
+                          {Object.entries(debugInfo.weights).map(([modality, weights]) => (
+                            <div key={modality} className="bg-white p-3 rounded border">
+                              <div className="font-medium text-xs uppercase text-slate-600 mb-1">{modality}</div>
+                              <div className="space-y-1">
+                                {Object.entries(weights as Record<string, number>).map(([model, weight]) => (
+                                  <div key={model} className="flex justify-between text-xs">
+                                    <span className="capitalize">{model.replace('_', ' ')}</span>
+                                    <span className="font-mono">{weight.toFixed(3)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {debugInfo.models_used && debugInfo.models_used.length > 0 && (
+                      <div>
+                        <h4 className="font-medium text-sm mb-2">Models Used ({debugInfo.models_used.length}):</h4>
+                        <div className="flex flex-wrap gap-1">
+                          {debugInfo.models_used.map((model: string, idx: number) => (
+                            <Badge key={idx} variant="outline" className="text-xs">
+                              {model}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </Reveal>
+          )}
 
           {/* AI Performance Metrics */}
           <Reveal delay={0.4}>

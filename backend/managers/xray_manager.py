@@ -1,8 +1,8 @@
 """
 X-ray analysis manager for YOLO detection and PCOS classification
 
-Handles loading and inference of X-ray analysis models including YOLO object
-detection and PCOS ensemble prediction with proper error handling.
+Handles automatic discovery and loading of all X-ray analysis models with
+YOLO object detection and dynamic ensemble inference.
 """
 
 import os
@@ -29,27 +29,28 @@ except ImportError:
     logger = logging.getLogger(__name__)
     logger.warning("Ultralytics YOLO not available")
 
-from config import settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR, get_risk_level
+from config import (
+    settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR, get_risk_level,
+    discover_models, load_model_labels, get_ensemble_weights, normalize_weights
+)
 from utils.validators import validate_image, get_safe_filename
-from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
 
 class XrayManager:
     """
-    Manages X-ray analysis including YOLO detection and PCOS classification
+    Manages automatic discovery and inference of X-ray analysis models
     
-    Loads and manages YOLO model for object detection and multiple TensorFlow
-    models for PCOS classification with ensemble prediction capabilities.
+    Automatically discovers all .h5 models in xray directory, loads YOLO for detection,
+    and supports both single model and ensemble inference with ROI processing.
     """
     
     def __init__(self):
         """Initialize X-ray manager and load models"""
         self.yolo_model = None
-        self.pcos_models = {}
+        self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_detect_objects = False
-        self.ensemble_manager = EnsembleManager()
-        self.class_labels = self._load_class_labels()
+        self.ensemble_weights = get_ensemble_weights()
         
         # Model status tracking
         self.model_status = {
@@ -59,37 +60,6 @@ class XrayManager:
         
         self._load_models()
     
-    def _load_class_labels(self) -> List[str]:
-        """Load class labels dynamically from .labels.txt files"""
-        # Try to find any .labels.txt file in the xray models directory
-        labels_files = list(XRAY_MODELS_DIR.glob("*.labels.txt"))
-        
-        try:
-            if labels_files:
-                # Use the first labels file found
-                labels_file = labels_files[0]
-                logger.info(f"Loading X-ray labels from: {labels_file}")
-                
-                with open(labels_file, 'r') as f:
-                    content = f.read().strip()
-                    if content.startswith('[') and content.endswith(']'):
-                        # JSON format
-                        labels = json.loads(content)
-                    else:
-                        # Plain text format, one label per line
-                        labels = [line.strip() for line in content.split('\n') if line.strip()]
-                
-                logger.info(f"Loaded X-ray class labels: {labels}")
-                return labels
-            else:
-                logger.warning(f"No X-ray labels files found in {XRAY_MODELS_DIR}, using defaults")
-                return ["normal", "pcos"]
-                
-        except Exception as e:
-            logger.error(f"Failed to load X-ray class labels: {str(e)}")
-            logger.info("Using default labels: ['normal', 'pcos']")
-            return ["normal", "pcos"]
-    
     def can_lazy_load_yolo(self) -> bool:
         """Check if YOLO model can be lazy loaded"""
         if not YOLO_AVAILABLE:
@@ -98,11 +68,9 @@ class XrayManager:
         return yolo_path.exists() and yolo_path.is_file()
     
     def can_lazy_load_pcos(self) -> bool:
-        """Check if PCOS models can be lazy loaded"""
-        return any(
-            (XRAY_MODELS_DIR / filename).exists() 
-            for filename in settings.XRAY_MODELS.values()
-        )
+        """Check if any PCOS models can be lazy loaded"""
+        discovered_models = discover_models(XRAY_MODELS_DIR)
+        return len(discovered_models) > 0
     
     def _load_models(self) -> None:
         """Load all X-ray analysis models"""
@@ -142,41 +110,62 @@ class XrayManager:
             self.model_status["yolo"]["error"] = str(e)
     
     def _load_pcos_models(self) -> None:
-        """Load PCOS classification models"""
+        """Discover and load all PCOS classification models"""
+        # Discover all .h5 models in xray directory
+        discovered_models = discover_models(XRAY_MODELS_DIR)
+        
+        logger.info(f"Discovered X-ray models: {list(discovered_models.keys())}")
+        
         loaded_count = 0
         
         # Load models based on USE_ENSEMBLE setting
         if settings.USE_ENSEMBLE:
-            models_to_load = settings.XRAY_MODELS
+            models_to_load = discovered_models
         else:
-            # Load only the best single model
-            best_model = settings.BEST_XRAY_MODEL
-            models_to_load = {best_model: settings.XRAY_MODELS[best_model]}
+            # Load only the first available model for single model mode
+            if discovered_models:
+                first_model = next(iter(discovered_models.items()))
+                models_to_load = {first_model[0]: first_model[1]}
+            else:
+                models_to_load = {}
         
-        for model_name, model_filename in models_to_load.items():
-            model_path = XRAY_MODELS_DIR / model_filename
-            
+        for model_name, model_path in models_to_load.items():
             try:
-                if model_path.exists():
-                    model = tf.keras.models.load_model(str(model_path), compile=False)
-                    self.pcos_models[model_name] = {
-                        "model": model,
-                        "filename": model_filename,
-                        "weight": settings.XRAY_ENSEMBLE_WEIGHTS.get(model_name, 1.0)
-                    }
-                    loaded_count += 1
-                    logger.info(f"Loaded PCOS model {model_name}: {model_path}")
-                else:
-                    logger.warning(f"PCOS model {model_name} not found: {model_path}")
+                # Load model
+                model = tf.keras.models.load_model(str(model_path), compile=False)
+                
+                # Load corresponding labels
+                labels = load_model_labels(model_path)
+                
+                # Get weight for this model
+                weight = self.ensemble_weights.get(model_name, 1.0)
+                
+                self.pcos_models[model_name] = {
+                    "model": model,
+                    "labels": labels,
+                    "path": str(model_path),
+                    "weight": weight
+                }
+                loaded_count += 1
+                logger.info(f"Loaded X-ray model {model_name}: {model_path} (weight: {weight})")
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
         
+        # Normalize weights for loaded models
+        if self.pcos_models:
+            model_names = list(self.pcos_models.keys())
+            normalized_weights = normalize_weights(self.ensemble_weights, model_names)
+            
+            for model_name, weight in normalized_weights.items():
+                if model_name in self.pcos_models:
+                    self.pcos_models[model_name]["weight"] = weight
+        
         self.model_status["xray"]["loaded"] = loaded_count > 0
-        self.model_status["xray"]["available"] = any(
-            (XRAY_MODELS_DIR / filename).exists() 
-            for filename in settings.XRAY_MODELS.values()
-        )
+        self.model_status["xray"]["available"] = len(discovered_models) > 0
+        
+        if loaded_count > 0:
+            logger.info(f"Successfully loaded {loaded_count} X-ray models with normalized weights")
     
     def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
         """
@@ -267,18 +256,19 @@ class XrayManager:
             
         return detections, vis_path
     
-    async def predict_pcos_roi(self, image_bytes: bytes, roi_box: List[float]) -> Dict[str, float]:
+    async def predict_pcos_roi(self, image_bytes: bytes, roi_box: List[float]) -> Dict[str, Any]:
         """
-        Predict PCOS from a specific ROI using ensemble of models
+        Predict PCOS from a specific ROI using ensemble of all loaded models
         
         Args:
             image_bytes: X-ray image bytes
             roi_box: Bounding box [x1, y1, x2, y2]
             
         Returns:
-            Dictionary mapping model names to PCOS probability scores
+            Dictionary with per-model predictions and ensemble result
         """
-        predictions = {}
+        per_model_predictions = {}
+        per_model_labels = {}
         
         try:
             # Open image and crop ROI
@@ -293,10 +283,10 @@ class XrayManager:
             for model_name, model_data in self.pcos_models.items():
                 try:
                     model = model_data["model"]
-                    config = model_data["config"]
+                    labels = model_data["labels"]
                     
-                    # Get input size from config
-                    input_size = tuple(config["input_size"])
+                    # Use standard input size (224x224 for most models)
+                    input_size = (224, 224)
                     
                     # Preprocess ROI
                     roi_array = self._preprocess_image(roi_bytes, input_size)
@@ -304,16 +294,20 @@ class XrayManager:
                     # Run prediction
                     prediction = model.predict(roi_array, verbose=0)
                     
-                    # Extract PCOS probability
+                    # Extract probabilities
                     if prediction.shape[1] == 1:
                         # Single output (sigmoid)
                         pcos_prob = float(prediction[0][0])
+                        probs = [1.0 - pcos_prob, pcos_prob]
                     else:
-                        # Two outputs (softmax) - assume [non_pcos, pcos]
-                        pcos_prob = float(prediction[0][1])
+                        # Multiple outputs (softmax)
+                        probs = [float(p) for p in prediction[0]]
                     
-                    predictions[model_name] = pcos_prob
-                    logger.debug(f"X-ray {model_name} ROI prediction: {pcos_prob:.3f}")
+                    # Store per-model results
+                    per_model_predictions[model_name] = probs
+                    per_model_labels[model_name] = labels
+                    
+                    logger.debug(f"X-ray {model_name} ROI prediction: {probs}")
                     
                 except Exception as e:
                     logger.error(f"PCOS ROI prediction failed for {model_name}: {str(e)}")
@@ -322,48 +316,135 @@ class XrayManager:
         except Exception as e:
             logger.error(f"ROI processing failed: {str(e)}")
         
-        return predictions
+        if not per_model_predictions:
+            return {
+                "per_model": {},
+                "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
+                "labels": ["normal", "pcos"]
+            }
+        
+        # Compute ensemble prediction
+        ensemble_result = self._compute_ensemble(per_model_predictions)
+        
+        return {
+            "per_model": per_model_predictions,
+            "per_model_labels": per_model_labels,
+            "ensemble": ensemble_result,
+            "labels": list(per_model_labels.values())[0] if per_model_labels else ["normal", "pcos"]
+        }
     
-    async def predict_pcos_full_image(self, image_bytes: bytes) -> Dict[str, float]:
+    async def predict_pcos_full_image(self, image_bytes: bytes) -> Dict[str, Any]:
         """
-        Predict PCOS from full X-ray image using ensemble of models
+        Predict PCOS from full X-ray image using ensemble of all loaded models
         
         Args:
             image_bytes: X-ray image bytes
             
         Returns:
-            Dictionary mapping model names to PCOS probability scores
+            Dictionary with per-model predictions and ensemble result
         """
-        predictions = {}
+        per_model_predictions = {}
+        per_model_labels = {}
         
         for model_name, model_data in self.pcos_models.items():
             try:
                 model = model_data["model"]
-                # Use standard input size (224x224 for most models)
+                labels = model_data["labels"]
+                
                 # Use standard input size (224x224 for most models)
                 input_size = (224, 224)
+                
                 # Preprocess full image
                 image_array = self._preprocess_image(image_bytes, input_size)
                 
                 # Run prediction
                 prediction = model.predict(image_array, verbose=0)
                 
-                # Extract PCOS probability
+                # Extract probabilities
                 if prediction.shape[1] == 1:
                     # Single output (sigmoid)
                     pcos_prob = float(prediction[0][0])
+                    probs = [1.0 - pcos_prob, pcos_prob]
                 else:
-                    # Two outputs (softmax) - assume [non_pcos, pcos]
-                    pcos_prob = float(prediction[0][1])
+                    # Multiple outputs (softmax)
+                    probs = [float(p) for p in prediction[0]]
                 
-                predictions[model_name] = pcos_prob
-                logger.debug(f"X-ray {model_name} full image prediction: {pcos_prob:.3f}")
+                # Store per-model results
+                per_model_predictions[model_name] = probs
+                per_model_labels[model_name] = labels
+                
+                logger.debug(f"X-ray {model_name} full image prediction: {probs}")
                 
             except Exception as e:
                 logger.error(f"PCOS full image prediction failed for {model_name}: {str(e)}")
                 continue
         
-        return predictions
+        if not per_model_predictions:
+            return {
+                "per_model": {},
+                "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
+                "labels": ["normal", "pcos"]
+            }
+        
+        # Compute ensemble prediction
+        ensemble_result = self._compute_ensemble(per_model_predictions)
+        
+        return {
+            "per_model": per_model_predictions,
+            "per_model_labels": per_model_labels,
+            "ensemble": ensemble_result,
+            "labels": list(per_model_labels.values())[0] if per_model_labels else ["normal", "pcos"]
+        }
+    
+    def _compute_ensemble(self, per_model_predictions: Dict[str, List[float]]) -> Dict[str, Any]:
+        """
+        Compute weighted ensemble prediction from per-model results
+        
+        Args:
+            per_model_predictions: Dictionary mapping model names to probability lists
+            
+        Returns:
+            Dictionary with ensemble results
+        """
+        if not per_model_predictions:
+            return {"prob": 0.0, "label": "unknown", "weights": {}}
+        
+        # Get weights for available models
+        available_models = list(per_model_predictions.keys())
+        weights = {name: self.pcos_models[name]["weight"] for name in available_models}
+        
+        # Compute weighted average for each class
+        num_classes = len(next(iter(per_model_predictions.values())))
+        ensemble_probs = [0.0] * num_classes
+        
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            for model_name, probs in per_model_predictions.items():
+                weight = weights[model_name]
+                for i, prob in enumerate(probs):
+                    ensemble_probs[i] += prob * weight / total_weight
+        else:
+            # Equal weighting fallback
+            for probs in per_model_predictions.values():
+                for i, prob in enumerate(probs):
+                    ensemble_probs[i] += prob / len(per_model_predictions)
+        
+        # Determine final prediction
+        max_prob_idx = np.argmax(ensemble_probs)
+        max_prob = ensemble_probs[max_prob_idx]
+        
+        # Use first model's labels as reference
+        first_model = next(iter(self.pcos_models.values()))
+        labels = first_model["labels"]
+        predicted_label = labels[max_prob_idx] if max_prob_idx < len(labels) else "unknown"
+        
+        return {
+            "prob": float(max_prob),
+            "probs": ensemble_probs,
+            "label": predicted_label,
+            "weights": weights,
+            "models_used": len(available_models)
+        }
     
     async def process_xray_image(self, file: UploadFile) -> Dict[str, Any]:
         """
@@ -550,4 +631,16 @@ class XrayManager:
     
     def get_model_status(self) -> Dict[str, Dict[str, Any]]:
         """Get current status of all X-ray models"""
-        return self.model_status.copy()
+        status = self.model_status.copy()
+        
+        # Add detailed model information
+        status["pcos_models"] = {}
+        for model_name, model_data in self.pcos_models.items():
+            status["pcos_models"][model_name] = {
+                "loaded": True,
+                "path": model_data["path"],
+                "weight": model_data["weight"],
+                "labels": model_data["labels"]
+            }
+        
+        return status

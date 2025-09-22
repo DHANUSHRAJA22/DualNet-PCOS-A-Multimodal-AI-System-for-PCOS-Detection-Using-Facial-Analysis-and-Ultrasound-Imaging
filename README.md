@@ -1,19 +1,18 @@
 # Multimodal PCOS Analyzer - Full Stack Application
 
-A comprehensive, production-ready full-stack application for PCOS screening analysis using AI-powered facial recognition and X-ray analysis.
+A comprehensive, production-ready full-stack application for PCOS screening analysis using AI-powered ensemble inference with automatic model discovery.
 
-## 🚀 Production Features
+## 🚀 Ensemble Production Features
 
-- **Configurable Ensemble**: Toggle between single model and ensemble inference
-- **Flexible Fusion**: Choose between threshold-based and discrete fusion modes
-- **Dynamic Label Loading**: Class labels loaded from `.labels.txt` files
-- **Structured API Responses**: Rich JSON with per-model scores, ROI details, and debug information
-- **Legacy Compatibility**: `/predict-legacy` endpoint for existing frontends
-- **Enhanced Error Handling**: Consistent `{ok: true/false}` response format
-- **Ensemble Models**: Support for VGG16, ResNet50, EfficientNet architectures
-- **Risk Thresholds**: Configurable probability bands (<0.33/0.33-0.66/>0.66)
-- **Docker Deployment**: Production-ready containerization
-- **Comprehensive Testing**: pytest test suite and cURL examples
+- **Automatic Model Discovery**: Discovers all `.h5` models in `models/face/` and `models/xray/` directories
+- **Dynamic Ensemble Inference**: Configurable ensemble with automatic weight normalization
+- **Per-Model Transparency**: Individual model scores and ensemble metadata exposed
+- **ROI-Level Analysis**: YOLO detection → crop → classify → ensemble per region
+- **Flexible Fusion Modes**: Threshold-based and discrete fusion strategies
+- **Dynamic Label Loading**: Class labels loaded from corresponding `.labels.txt` files
+- **Rich Debug Information**: Complete processing insights with model weights and ROI details
+- **Production Configuration**: Environment-based settings for deployment flexibility
+- **Backward Compatibility**: Legacy endpoint maintains existing client support
 
 ## 🚀 Features
 
@@ -22,31 +21,53 @@ A comprehensive, production-ready full-stack application for PCOS screening anal
 - **Camera Capture**: Built-in camera functionality for real-time image capture
 - **Sample Images**: Pre-loaded demo images for testing
 - **Responsive Design**: Mobile-first approach with accessibility compliance
-- **Real-time Analysis**: Integration with FastAPI backend for AI-powered screening
+- **Ensemble Results Display**: Per-model breakdowns and ROI analysis visualization
 - **Smooth Animations**: Framer Motion powered interactions
 - **Backend Status**: Real-time health monitoring with API configuration
-- **Rich Results Display**: Per-model scores, ROI analysis, and ensemble details
-- **Debug Information**: Development insights and processing metadata
+- **Enhanced Results Display**: Ensemble metadata, model weights, and debug information
 
-### Backend (FastAPI + TensorFlow + YOLO) - Production Ready
-- **Multi-modal Analysis**: Facial recognition + X-ray morphological analysis
+### Backend (FastAPI + TensorFlow + YOLO) - Ensemble Production Ready
+- **Automatic Model Discovery**: Loads all available models from configured directories
+- **Ensemble Inference**: Weighted averaging across multiple model architectures
 - **Gender Gating**: Male faces skip PCOS analysis with clear messaging
-- **Ensemble Models**: Multiple TensorFlow models with weighted averaging
-- **YOLO Detection**: Object detection for X-ray ROI classification
-- **Per-Model Scores**: Detailed breakdown of individual model predictions
-- **ROI Processing**: Region-of-interest analysis with bounding box details
-- **Structured Responses**: Rich API responses with comprehensive metadata
-- **Production Ready**: Comprehensive error handling, logging, and validation
-- **CORS Support**: Configured for frontend integration
-- **Static File Serving**: Automatic image serving and cleanup
-- **File Validation**: Size limits (5MB), MIME type checking, and security validation
-- **JSON Serialization**: Proper NumPy type conversion for API responses
-- **Dynamic Label Loading**: Class labels loaded from .labels.txt files
-- **Risk Thresholds**: Configurable probability bands (<0.33/0.33-0.66/>0.66)
-- **Fallback Classification**: Full image analysis when no ROIs detected
-- **Legacy Compatibility**: /predict-legacy endpoint for existing clients
+- **ROI-Level Ensemble**: Per-region analysis with individual model contributions
+- **Configurable Fusion**: Threshold and discrete fusion modes
+- **Rich Metadata**: Complete ensemble details, weights, and processing insights
+- **Environment Configuration**: All settings configurable via environment variables
 
 ## 🏃‍♂️ Quick Start (Production)
+
+### Model Setup
+
+Place your trained models in these directories:
+
+```
+backend/models/
+├── face/
+│   ├── gender_classifier.h5           # Gender detection model
+│   ├── vgg16_pcos.h5                 # Face PCOS model (VGG16)
+│   ├── vgg16_pcos.labels.txt         # Class labels for VGG16
+│   ├── resnet50_pcos.h5              # Face PCOS model (ResNet50)
+│   ├── resnet50_pcos.labels.txt      # Class labels for ResNet50
+│   ├── efficientnetb0_pcos.h5        # Face PCOS model (EfficientNetB0)
+│   └── efficientnetb0_pcos.labels.txt # Class labels for EfficientNetB0
+├── xray/
+│   ├── vgg16_xray.h5                 # X-ray PCOS model (VGG16)
+│   ├── vgg16_xray.labels.txt         # Class labels for VGG16
+│   ├── resnet50_xray.h5              # X-ray PCOS model (ResNet50)
+│   ├── resnet50_xray.labels.txt      # Class labels for ResNet50
+│   ├── efficientnetb0_xray.h5        # X-ray PCOS model (EfficientNetB0)
+│   └── efficientnetb0_xray.labels.txt # Class labels for EfficientNetB0
+└── yolo/
+    └── bestv8.pt                     # YOLO detection model
+```
+
+### Label Files Format
+
+Create `.labels.txt` files with class names (JSON array format):
+```
+["non_pcos", "pcos"]
+```
 
 ### Using Docker (Recommended)
 
@@ -72,20 +93,20 @@ npm run build
 ```bash
 # Backend (.env)
 USE_ENSEMBLE=true
-FUSION_MODE=threshold
+FUSION_MODE=threshold  # or "discrete"
 ALLOWED_ORIGINS=http://localhost:5173,https://your-frontend.com
 DEBUG=false
 MAX_UPLOAD_MB=5
 HOST=0.0.0.0
 PORT=5000
 
-# Ensemble weights (optional)
-FACE_VGG16_WEIGHT=0.33
-FACE_RESNET50_WEIGHT=0.33
-FACE_EFFICIENTNET_WEIGHT=0.34
-XRAY_VGG16_WEIGHT=0.33
-XRAY_RESNET50_WEIGHT=0.33
-XRAY_EFFICIENTNET_WEIGHT=0.34
+# Ensemble weights (optional - will auto-normalize)
+ENSEMBLE_WEIGHT_VGG16_PCOS=0.2
+ENSEMBLE_WEIGHT_RESNET50_PCOS=0.2
+ENSEMBLE_WEIGHT_EFFICIENTNETB0_PCOS=0.2
+ENSEMBLE_WEIGHT_EFFICIENTNETB1_PCOS=0.2
+ENSEMBLE_WEIGHT_EFFICIENTNETB2_PCOS=0.1
+ENSEMBLE_WEIGHT_EFFICIENTNETB3_PCOS=0.1
 
 # Frontend
 VITE_API_BASE=https://your-backend.com
@@ -96,7 +117,7 @@ VITE_API_BASE=https://your-backend.com
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- Your trained model files (see Model Setup below)
+- Your trained model files (see Model Setup above)
 
 ### 1. Backend Setup
 
@@ -107,8 +128,8 @@ cd backend
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Add your model files (see Model Setup section)
-# Place models in backend/models/ with exact filenames
+# Add your model files (see Model Setup above)
+# Models will be automatically discovered
 
 # Start the backend server
 uvicorn app:app --reload --port 5000
@@ -131,75 +152,27 @@ npm run dev
 - **API Documentation**: http://localhost:5000/docs
 - **Health Check**: http://localhost:5000/health
 
-## 🧠 Model Training
-
-### Train Ensemble Models
-
-```bash
-cd backend
-
-# Train ensemble of face models (VGG16, ResNet50, EfficientNet)
-python model.py --ensemble --type face --data_dir /path/to/face/data
-
-# Train ensemble of X-ray models
-python model.py --ensemble --type xray --data_dir /path/to/xray/data
-
-# Train single model
-python model.py --type face --data_dir /path/to/face/data --model_name my_face_model
-
-# Export model for serving
-python model.py --export models/face/my_model.h5 --format onnx
-```
-
-### Label Files
-
-Models automatically save labels in both JSON and plain text formats:
-
-```
-models/face/
-├── face_model_vgg16.h5
-├── face_model_vgg16.labels.txt     # ["non_pcos", "pcos"]
-├── face_model_vgg16.labels.json    # With metadata
-└── face_model_vgg16_metrics.json   # Training metrics
-```
-
-## 📁 Model Setup
-
-Place your trained models in these exact locations:
-
-```
-backend/models/
-├── face/
-│   ├── gender_classifier.h5      # Gender detection model
-│   ├── face_model_A.h5           # Face PCOS model 1 (VGG16)
-│   ├── face_model_B.h5           # Face PCOS model 2 (ResNet50)
-│   └── pcos_detector_158.labels.txt  # Face class labels
-├── xray/
-│   ├── xray_model_A.h5           # X-ray PCOS model 1
-│   ├── xray_model_B.h5           # X-ray PCOS model 2
-│   └── xray_classifier.labels.txt    # X-ray class labels
-└── yolo/
-    └── bestv8.pt                 # YOLO detection model
-```
-
-**Important**: Use these exact filenames. The backend is configured to load models from these specific paths.
-
-### Label Files Format
-
-Create `.labels.txt` files with class names:
-```
-# Option 1: JSON format
-["non_pcos", "pcos"]
-
-# Option 2: Plain text (one per line)
-non_pcos
-pcos
-```
 ## 🔧 Configuration
-## 📡 API Endpoints (Enhanced)
+
+### Backend Configuration
+
+Edit `config.py` or use environment variables:
+- `USE_ENSEMBLE`: Enable/disable ensemble inference
+- `FUSION_MODE`: Choose fusion strategy ("threshold" or "discrete")
+- Model weights: `ENSEMBLE_WEIGHT_{MODEL_NAME}`
+- Risk thresholds and file upload limits
+
+### Frontend Configuration
+
+The frontend automatically detects the backend URL:
+1. Query parameter: `?api=https://your-backend.com`
+2. Environment variable: `VITE_API_BASE`
+3. Default: Vite proxy to localhost:5000
+
+## 📡 API Endpoints (Ensemble Enhanced)
 
 ### POST /predict (New Structured Format)
-Enhanced prediction endpoint with rich metadata:
+Enhanced prediction endpoint with ensemble metadata:
 
 ```json
 {
@@ -210,27 +183,41 @@ Enhanced prediction endpoint with rich metadata:
       "label": "PCOS indicators detected",
       "scores": [0.3, 0.7],
       "risk": "high",
-      "per_model": {"vgg16": 0.65, "resnet50": 0.75},
+      "per_model": {"vgg16_pcos": 0.65, "resnet50_pcos": 0.75, "efficientnetb0_pcos": 0.80},
       "ensemble": {
         "method": "weighted_average",
-        "score": 0.7,
-        "models_used": 2,
-        "weights_used": {"vgg16": 0.5, "resnet50": 0.5}
+        "score": 0.73,
+        "models_used": 3,
+        "weights_used": {"vgg16_pcos": 0.33, "resnet50_pcos": 0.33, "efficientnetb0_pcos": 0.34}
+      }
+    },
+    {
+      "type": "xray",
+      "per_roi": [
+        {
+          "roi_id": 0,
+          "box": [100, 150, 200, 250],
+          "per_model": {"vgg16_xray": 0.75, "resnet50_xray": 0.85},
+          "ensemble": {"method": "weighted_average", "score": 0.80}
+        }
+      ],
+      "detections": [{"box": [100,150,200,250], "conf": 0.85, "label": "cyst"}]
       }
     }
   ],
   "final": {
     "risk": "high",
     "confidence": 0.75,
-    "explanation": "High risk: Multiple indicators detected",
+    "explanation": "High risk: Both facial and X-ray analysis indicate PCOS symptoms",
     "fusion_mode": "threshold"
   },
   "warnings": [],
   "processing_time_ms": 1250.5,
   "debug": {
-    "filenames": ["face_image.jpg"],
-    "models_used": ["vgg16", "resnet50"],
-    "weights": {"face": {"vgg16": 0.5, "resnet50": 0.5}},
+    "filenames": ["face.jpg", "xray.jpg"],
+    "models_used": ["vgg16_pcos", "resnet50_pcos", "vgg16_xray"],
+    "weights": {"face": {"vgg16_pcos": 0.33}, "xray": {"vgg16_xray": 0.5}},
+    "roi_boxes": [{"roi_id": 0, "box": [100,150,200,250]}],
     "fusion_mode": "threshold",
     "use_ensemble": true
   }
@@ -256,43 +243,8 @@ Single file upload with type parameter:
 - `file`: Image file to analyze
 - `type`: Analysis type ('face' or 'xray')
 
-
-### Backend Configuration
-
-Edit `backend/config.py` to adjust:
-- Model file paths and weights
-- Risk thresholds
-- File upload limits
-- CORS origins
-
-### Frontend Configuration
-
-The frontend automatically detects the backend URL:
-1. Query parameter: `?api=https://your-backend.com`
-2. Environment variable: `VITE_API_BASE`
-3. Default: Vite proxy to localhost:5000
-
-### Environment Variables
-
-```bash
-# Backend
-export USE_ENSEMBLE=true
-export FUSION_MODE=threshold
-export HOST=127.0.0.1
-export PORT=5000
-export DEBUG=true
-export MAX_UPLOAD_MB=5
-export STATIC_TTL_SECONDS=3600
-export ALLOWED_ORIGINS="http://localhost:5173,http://localhost:8080"
-
-# Frontend
-export VITE_API_BASE=http://localhost:5000
-```
-
-## 📡 API Endpoints
-
 ### GET /health
-Returns enhanced model availability status with lazy-loading capability and detailed model information
+Returns enhanced model availability status with ensemble model details:
 
 ```json
 {
@@ -302,10 +254,24 @@ Returns enhanced model availability status with lazy-loading capability and deta
       "status": "loaded",
       "file_exists": true,
       "lazy_loadable": true
+    },
+    "face_vgg16_pcos": {
+      "status": "loaded",
+      "file_exists": true,
+      "lazy_loadable": true,
+      "path": "/app/models/face/vgg16_pcos.h5",
+      "version": "weight_0.33"
+    },
+    "xray_resnet50_xray": {
+      "status": "loaded",
+      "file_exists": true,
+      "lazy_loadable": true,
+      "path": "/app/models/xray/resnet50_xray.h5",
+      "version": "weight_0.50"
     }
   },
   "uptime_seconds": 1234.5,
-  "version": "2.0.0"
+  "version": "3.0.0"
 }
 ```
 
@@ -347,27 +313,29 @@ curl -X POST "http://127.0.0.1:5000/predict-legacy" \
 
 ## 🏗 Architecture
 
-### Face Analysis Pipeline
+### Ensemble Face Analysis Pipeline
 1. **Gender Detection**: Classify male/female
 2. **Gender Gating**: Skip PCOS analysis for males
-3. **Per-Model Analysis**: Run each face model individually
-4. **Ensemble Fusion**: Weighted average → risk classification
-5. **Metadata Collection**: Store per-model scores and ensemble details
+3. **Model Discovery**: Load all available face models from directory
+4. **Per-Model Analysis**: Run each discovered model individually
+5. **Ensemble Fusion**: Weighted average with normalized weights → risk classification
+6. **Metadata Collection**: Store per-model scores, weights, and ensemble details
 
-### X-ray Analysis Pipeline
+### Ensemble X-ray Analysis Pipeline
 1. **YOLO Detection**: Find ROIs → generate overlay
-2. **Per-ROI Analysis**: Crop and classify each detected region
-3. **ROI Ensemble**: Combine models for each ROI
-4. **Global Ensemble**: Average across all ROIs
-5. **Fallback**: Full image classification if no detections
-6. **Metadata Collection**: Store detections, ROI details, and ensemble info
-
+2. **Model Discovery**: Load all available X-ray models from directory
+3. **Per-ROI Analysis**: Crop and classify each detected region with all models
+4. **ROI-Level Ensemble**: Combine models for each ROI individually
+5. **Global Ensemble**: Aggregate ROI ensembles for final prediction
+6. **Fallback**: Full image ensemble classification if no detections
+7. **Metadata Collection**: Store detections, ROI details, and ensemble info
 
 ### Risk Classification
 - **Low Risk**: <0.33 probability
 - **Moderate Risk**: 0.33-0.66 probability  
 - **High Risk**: ≥0.66 probability
-- **Discrete Fusion**: Enhanced logic for multi-modal assessment
+- **Threshold Fusion**: Probability-based risk bands
+- **Discrete Fusion**: Rule-based multi-modal assessment
 
 ## 🐳 Production Deployment
 
@@ -461,15 +429,16 @@ npm run build
 - Structured logging with timestamps
 - Processing time tracking
 - Error rate monitoring
-- Per-model performance tracking
-- ROI analysis metrics
+- Ensemble performance tracking
+- Per-model contribution analysis
+- ROI-level analysis metrics
 
 ### Frontend Monitoring
 - Backend connectivity status
 - Real-time health checks
 - User-friendly error messages
-- Performance metrics
-- Rich result visualization
+- Ensemble performance metrics
+- Rich result visualization with model breakdowns
 
 ## 🔍 Troubleshooting
 
@@ -481,11 +450,11 @@ npm run build
    - For sandbox environments, use `?api=` parameter
 
 2. **Models Not Loading**
-   - Verify model files are in correct locations
+   - Verify model files are in correct directories (`models/face/`, `models/xray/`)
    - Check file permissions
    - Review backend logs for loading errors
-    - Test lazy loading capability via health endpoint
-   - Ensure `.labels.txt` files exist alongside model files
+   - Test lazy loading capability via health endpoint
+   - Ensure `.labels.txt` files exist alongside each model file
 
 3. **File Upload Errors**
    - Check file size (5MB limit by default)
@@ -496,17 +465,20 @@ npm run build
 4. **Ensemble Configuration**
    - Set `USE_ENSEMBLE=false` to use single best model
    - Adjust `FUSION_MODE` between "threshold" and "discrete"
-   - Configure model weights via environment variables
+   - Configure individual model weights via `ENSEMBLE_WEIGHT_*` environment variables
+   - Weights are automatically normalized to sum to 1.0
 
 5. **Label Loading Issues**
-   - Ensure .labels.txt files exist in model directories
+   - Ensure `.labels.txt` files exist alongside each model file
    - Check JSON format: `["non_pcos", "pcos"]`
    - Review backend logs for label loading errors
+   - Each model can have different labels if needed
 
 6. **Docker Issues**
    - Ensure models directory is mounted: `-v ./models:/app/models:ro`
    - Check environment variables are set correctly
    - Verify port mapping: `-p 5000:5000`
+   - Ensure all model files and labels are present in mounted directory
 
 ## 👨‍💻 Author
 
@@ -518,18 +490,18 @@ npm run build
 
 This full-stack application is production-ready. Simply:
 
-1. **Add your trained models** to the specified paths
-2. **Create label files** for your model classes
+1. **Add your trained models** to the `models/face/` and `models/xray/` directories
+2. **Create corresponding `.labels.txt` files** for each model
 3. **Start the backend** with `uvicorn app:app --port 5000`
 4. **Start the frontend** with `npm run dev`
 5. **Access the application** at http://localhost:5173
 
 The application will automatically handle:
-- Dynamic model and label loading
-- Ensemble predictions with per-model breakdowns
-- ROI processing with bounding box analysis
+- Automatic model discovery and loading
+- Ensemble predictions with configurable weights
+- Per-model transparency and ROI-level analysis
 - File validation and security checks
 - Comprehensive error handling and logging
-- Rich debugging capabilities and performance monitoring
+- Rich debugging capabilities with ensemble metadata
 
-Perfect for production deployment with Docker, comprehensive testing, and full API documentation!
+Perfect for production deployment with Docker, automatic model discovery, and comprehensive ensemble insights!

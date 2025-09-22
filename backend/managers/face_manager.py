@@ -1,8 +1,8 @@
 """
 Face analysis manager for gender detection and PCOS classification
 
-Handles loading and inference of facial analysis models including gender
-classification and PCOS ensemble prediction with proper error handling.
+Handles automatic discovery and loading of all facial analysis models with
+dynamic ensemble inference and proper error handling.
 """
 
 import os
@@ -20,27 +20,28 @@ from fastapi import UploadFile
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import tensorflow as tf
 
-from config import settings, FACE_MODELS_DIR, UPLOADS_DIR, get_risk_level
+from config import (
+    settings, FACE_MODELS_DIR, UPLOADS_DIR, get_risk_level,
+    discover_models, load_model_labels, get_ensemble_weights, normalize_weights
+)
 from utils.validators import validate_image, get_safe_filename
-from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
 
 class FaceManager:
     """
-    Manages facial analysis including gender detection and PCOS classification
+    Manages automatic discovery and inference of facial analysis models
     
-    Loads and manages multiple TensorFlow models for comprehensive facial analysis
-    with ensemble prediction capabilities.
+    Automatically discovers all .h5 models in face directory and loads corresponding
+    labels. Supports both single model and ensemble inference with configurable weights.
     """
     
     def __init__(self):
         """Initialize face manager and load models"""
         self.gender_model = None
-        self.pcos_models = {}
+        self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_predict_gender = False
-        self.ensemble_manager = EnsembleManager()
-        self.class_labels = self._load_class_labels()
+        self.ensemble_weights = get_ensemble_weights()
         
         # Model status tracking
         self.model_status = {
@@ -50,48 +51,18 @@ class FaceManager:
         
         self._load_models()
     
-    def _load_class_labels(self) -> List[str]:
-        """Load class labels dynamically from .labels.txt files"""
-        # Try to find any .labels.txt file in the face models directory
-        labels_files = list(FACE_MODELS_DIR.glob("*.labels.txt"))
-        
-        try:
-            if labels_files:
-                # Use the first labels file found
-                labels_file = labels_files[0]
-                logger.info(f"Loading labels from: {labels_file}")
-                
-                with open(labels_file, 'r') as f:
-                    content = f.read().strip()
-                    if content.startswith('[') and content.endswith(']'):
-                        # JSON format
-                        labels = json.loads(content)
-                    else:
-                        # Plain text format, one label per line
-                        labels = [line.strip() for line in content.split('\n') if line.strip()]
-                
-                logger.info(f"Loaded class labels: {labels}")
-                return labels
-            else:
-                logger.warning(f"No labels files found in {FACE_MODELS_DIR}, using defaults")
-                return ["non_pcos", "pcos"]
-                
-        except Exception as e:
-            logger.error(f"Failed to load class labels: {str(e)}")
-            logger.info("Using default labels: ['non_pcos', 'pcos']")
-            return ["non_pcos", "pcos"]
-    
     def can_lazy_load_gender(self) -> bool:
         """Check if gender model can be lazy loaded"""
         gender_path = FACE_MODELS_DIR / settings.GENDER_MODEL
         return gender_path.exists() and gender_path.is_file()
     
     def can_lazy_load_pcos(self) -> bool:
-        """Check if PCOS models can be lazy loaded"""
-        return any(
-            (FACE_MODELS_DIR / filename).exists() 
-            for filename in settings.FACE_MODELS.values()
-        )
+        """Check if any PCOS models can be lazy loaded"""
+        discovered_models = discover_models(FACE_MODELS_DIR)
+        # Exclude gender classifier from PCOS models
+        pcos_models = {name: path for name, path in discovered_models.items() 
+                      if not name.startswith('gender')}
+        return len(pcos_models) > 0
     
     def _load_models(self) -> None:
         """Load all facial analysis models"""

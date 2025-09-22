@@ -126,7 +126,7 @@ export function ConfidenceVisualization({ scores, prediction, analysisType, conf
                       {Object.entries(ensemble.weights_used).map(([model, weight]) => (
                         <div key={model} className="flex justify-between text-xs">
                           <span className="capitalize">{model.replace('_', ' ')}</span>
-                          <span>{weight.toFixed(2)}</span>
+                          <span className="font-mono">{weight.toFixed(3)}</span>
                         </div>
                       ))}
                     </div>

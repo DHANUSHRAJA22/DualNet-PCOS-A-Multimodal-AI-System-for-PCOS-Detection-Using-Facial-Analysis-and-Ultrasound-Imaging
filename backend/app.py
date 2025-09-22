@@ -1,11 +1,11 @@
 """
-PCOS Analyzer FastAPI Backend - Production Ready
+PCOS Analyzer FastAPI Backend - Ensemble Production Ready
 
-Enhanced version with structured responses, proper validation, ROI processing,
-and comprehensive error handling for production deployment.
+Enhanced version with automatic model discovery, ensemble inference,
+structured responses, and comprehensive error handling for production deployment.
 
 Author: DHANUSH RAJA (21MIC0158)
-Version: 2.0.0
+Version: 3.0.0
 """
 
 import os
@@ -46,8 +46,8 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(
     title="PCOS Analyzer API",
-    description="AI-powered PCOS screening using ensemble deep learning models",
-    version="2.0.0",
+    description="AI-powered PCOS screening with automatic model discovery and ensemble inference",
+    version="3.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -136,7 +136,7 @@ def ensure_json_serializable(obj: Any) -> Any:
 
 @app.get("/health", response_model=EnhancedHealthResponse)
 async def enhanced_health_check():
-    """Enhanced health check with model status"""
+    """Enhanced health check with detailed model discovery status"""
     try:
         uptime = (datetime.now() - startup_time).total_seconds()
         
@@ -177,6 +177,27 @@ async def enhanced_health_check():
             error=xray_status.get("xray", {}).get("error")
         )
         
+        # Add individual model details
+        if "pcos_models" in face_status:
+            for model_name, model_info in face_status["pcos_models"].items():
+                models_status[f"face_{model_name}"] = ModelStatus(
+                    status="loaded",
+                    file_exists=True,
+                    lazy_loadable=True,
+                    path=model_info.get("path"),
+                    version=f"weight_{model_info.get('weight', 0):.2f}"
+                )
+        
+        if "pcos_models" in xray_status:
+            for model_name, model_info in xray_status["pcos_models"].items():
+                models_status[f"xray_{model_name}"] = ModelStatus(
+                    status="loaded",
+                    file_exists=True,
+                    lazy_loadable=True,
+                    path=model_info.get("path"),
+                    version=f"weight_{model_info.get('weight', 0):.2f}"
+                )
+        
         # Determine overall status
         loadable_count = sum(1 for model in models_status.values() if model.lazy_loadable)
         total_models = len(models_status)
@@ -192,7 +213,7 @@ async def enhanced_health_check():
             status=overall_status,
             models=models_status,
             uptime_seconds=uptime,
-            version="2.0.0"
+            version="3.0.0"
         )
         
     except Exception as e:
@@ -204,12 +225,12 @@ async def enhanced_health_check():
             status="error",
             models={
                 "gender": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e)),
-                "face": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e)),
+                "face_ensemble": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e)),
                 "yolo": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e)),
-                "xray": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e))
+                "xray_ensemble": ModelStatus(status="error", file_exists=False, lazy_loadable=False, error=str(e))
             },
             uptime_seconds=0.0,
-            version="2.0.0"
+            version="3.0.0"
         )
 
 @app.post("/predict", response_model=StructuredPredictionResponse)
@@ -217,7 +238,7 @@ async def structured_predict(
     face_img: Optional[UploadFile] = File(None),
     xray_img: Optional[UploadFile] = File(None)
 ):
-    """Enhanced prediction endpoint with structured response format"""
+    """Enhanced prediction endpoint with ensemble inference and structured response"""
     start_time = datetime.now()
     
     try:
