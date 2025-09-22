@@ -370,13 +370,29 @@ async def structured_predict(
                 modalities.append(modality)
         
         # Generate final combined result
-        final_result = ensemble_manager.combine_modalities(face_score, xray_score)
+        # Simple ensemble combination for final result
+        if face_score is not None and xray_score is not None:
+            combined_score = (face_score + xray_score) / 2
+            combined_risk = get_risk_level(combined_score)
+            explanation = f"Combined analysis indicates {combined_risk} PCOS risk based on both facial and X-ray analysis"
+        elif face_score is not None:
+            combined_score = face_score
+            combined_risk = get_risk_level(combined_score)
+            explanation = f"Facial analysis indicates {combined_risk} PCOS risk"
+        elif xray_score is not None:
+            combined_score = xray_score
+            combined_risk = get_risk_level(combined_score)
+            explanation = f"X-ray analysis indicates {combined_risk} PCOS risk"
+        else:
+            combined_score = 0.0
+            combined_risk = "unknown"
+            explanation = "No analysis results available"
         
         # Create final assessment
         final = FinalResult(
-            risk=final_result["overall_risk"],
-            confidence=final_result.get("final_score", 0.0),
-            explanation=final_result["combined"],
+            risk=combined_risk,
+            confidence=combined_score,
+            explanation=explanation,
             fusion_mode=settings.FUSION_MODE
         )
         

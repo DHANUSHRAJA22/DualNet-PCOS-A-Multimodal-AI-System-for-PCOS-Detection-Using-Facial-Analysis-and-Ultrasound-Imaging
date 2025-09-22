@@ -117,12 +117,15 @@ export function ResultCard({
           />
 
           {/* Per-Model Scores Display */}
-          {modality?.per_model && Object.keys(modality.per_model).length > 0 && (
+          {(modality?.per_model || modality?.face_models || modality?.xray_models) && (
             <div>
               <h4 className="font-semibold mb-3 text-slate-800">Individual Model Scores</h4>
               <div className="bg-white/70 rounded-lg p-4 border border-slate-200">
                 <div className="space-y-3">
-                  {Object.entries(modality.per_model).map(([modelName, score]) => (
+                  {Object.entries(modality.per_model || modality.face_models || modality.xray_models || {}).map(([modelName, score]) => {
+                    // Handle both score formats (single number or array)
+                    const displayScore = Array.isArray(score) ? score[1] : score; // Use PCOS probability
+                    return (
                     <div key={modelName} className="flex justify-between items-center">
                       <span className="text-sm font-medium capitalize text-slate-700">
                         {modelName.replace('_', ' ')}
@@ -131,15 +134,15 @@ export function ResultCard({
                         <div className="w-20 bg-slate-200 rounded-full h-2">
                           <div
                             className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2 rounded-full transition-all duration-1000"
-                            style={{ width: `${(score as number) * 100}%` }}
+                            style={{ width: `${displayScore * 100}%` }}
                           />
                         </div>
                         <Badge variant="outline" className="font-mono text-xs">
-                          {((score as number) * 100).toFixed(1)}%
+                          {(displayScore * 100).toFixed(1)}%
                         </Badge>
                       </div>
                     </div>
-                  ))}
+                  )})}
                   
                   {modality.ensemble && (
                     <div className="pt-3 border-t border-slate-200">
