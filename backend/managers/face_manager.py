@@ -22,19 +22,19 @@ import tensorflow as tf
 
 from config import (
     settings, FACE_MODELS_DIR, UPLOADS_DIR, get_risk_level,
-    discover_models, load_model_labels, get_ensemble_weights, normalize_weights
+    get_available_face_models, get_model_labels, get_ensemble_weights, normalize_weights,
+    FACE_MODELS, BEST_FACE_MODEL, FACE_ENSEMBLE_WEIGHTS
 )
 from utils.validators import validate_image, get_safe_filename
-from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
 
 class FaceManager:
     """
-    Manages automatic discovery and inference of facial analysis models
+    Manages ensemble inference of facial analysis models
     
-    Automatically discovers all .h5 models in face directory and loads corresponding
-    labels. Supports both single model and ensemble inference with configurable weights.
+    Loads multiple face models and performs ensemble inference with configurable weights.
+    Supports graceful degradation when models are missing.
     """
     
     def __init__(self):
@@ -42,8 +42,7 @@ class FaceManager:
         self.gender_model = None
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_predict_gender = False
-        self.ensemble_weights = get_ensemble_weights()
-        self.ensemble_manager = EnsembleManager()
+        self.ensemble_weights = get_ensemble_weights('face')
         
         # Model status tracking
         self.model_status = {
@@ -60,11 +59,8 @@ class FaceManager:
     
     def can_lazy_load_pcos(self) -> bool:
         """Check if any PCOS models can be lazy loaded"""
-        discovered_models = discover_models(FACE_MODELS_DIR)
-        # Exclude gender classifier from PCOS models
-        pcos_models = {name: path for name, path in discovered_models.items() 
-                      if not name.startswith('gender')}
-        return len(pcos_models) > 0
+        available_models = get_available_face_models()
+        return len(available_models) > 0
     
     def _load_models(self) -> None:
         """Load all facial analysis models"""
@@ -100,41 +96,58 @@ class FaceManager:
             self.model_status["gender"]["error"] = str(e)
     
     def _load_pcos_models(self) -> None:
-        """Load PCOS classification models"""
+        """Load PCOS classification models with ensemble support"""
         loaded_count = 0
         
-        # Load models based on USE_ENSEMBLE setting
+        # Get available models
+        available_models = get_available_face_models()
+        
         if settings.USE_ENSEMBLE:
-            models_to_load = settings.FACE_MODELS
+            models_to_load = available_models
         else:
             # Load only the best single model
-            best_model = settings.BEST_FACE_MODEL
-            models_to_load = {best_model: settings.FACE_MODELS[best_model]}
+            if BEST_FACE_MODEL in available_models:
+                models_to_load = {BEST_FACE_MODEL: available_models[BEST_FACE_MODEL]}
+            else:
+                # Fallback to first available model
+                if available_models:
+                    first_model = next(iter(available_models.items()))
+                    models_to_load = {first_model[0]: first_model[1]}
+                else:
+                    models_to_load = {}
         
-        for model_name, model_filename in models_to_load.items():
-            model_path = FACE_MODELS_DIR / model_filename
+        for model_name, model_path in models_to_load.items():
             
             try:
-                if model_path.exists():
-                    model = tf.keras.models.load_model(str(model_path), compile=False)
-                    self.pcos_models[model_name] = {
-                        "model": model,
-                        "filename": model_filename,
-                        "weight": settings.FACE_ENSEMBLE_WEIGHTS.get(model_name, 1.0)
-                    }
-                    loaded_count += 1
-                    logger.info(f"Loaded PCOS model {model_name}: {model_path}")
-                else:
-                    logger.warning(f"PCOS model {model_name} not found: {model_path}")
+                model = tf.keras.models.load_model(str(model_path), compile=False)
+                weight = self.ensemble_weights.get(model_name, 1.0)
+                
+                self.pcos_models[model_name] = {
+                    "model": model,
+                    "path": str(model_path),
+                    "weight": weight
+                }
+                loaded_count += 1
+                logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight})")
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
+                continue
+        
+        # Normalize weights for loaded models
+        if self.pcos_models:
+            model_names = list(self.pcos_models.keys())
+            normalized_weights = normalize_weights(self.ensemble_weights, model_names)
+            
+            for model_name, weight in normalized_weights.items():
+                if model_name in self.pcos_models:
+                    self.pcos_models[model_name]["weight"] = weight
         
         self.model_status["face"]["loaded"] = loaded_count > 0
-        self.model_status["face"]["available"] = any(
-            (FACE_MODELS_DIR / filename).exists() 
-            for filename in settings.FACE_MODELS.values()
-        )
+        self.model_status["face"]["available"] = len(available_models) > 0
+        
+        if loaded_count > 0:
+            logger.info(f"Successfully loaded {loaded_count} face models with normalized weights")
     
     def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int]) -> np.ndarray:
         """
@@ -220,17 +233,18 @@ class FaceManager:
                 "label": "female"
             }
     
-    async def predict_pcos(self, image_bytes: bytes) -> Dict[str, float]:
+    async def predict_pcos_ensemble(self, image_bytes: bytes) -> Dict[str, Any]:
         """
-        Predict PCOS from facial features using ensemble of models
+        Predict PCOS from facial features using ensemble of all loaded models
         
         Args:
             image_bytes: Preprocessed image bytes
             
         Returns:
-            Dictionary mapping model names to PCOS probability scores
+            Dictionary with per-model predictions and ensemble result
         """
-        predictions = {}
+        per_model_predictions = {}
+        per_model_scores = {}
         
         for model_name, model_data in self.pcos_models.items():
             try:
@@ -249,11 +263,13 @@ class FaceManager:
                 if prediction.shape[1] == 1:
                     # Single output (sigmoid)
                     pcos_prob = float(prediction[0][0])
-                else:
-                    # Two outputs (softmax) - assume [non_pcos, pcos]
-                    pcos_prob = float(prediction[0][1])
+                    probs = [1.0 - pcos_prob, pcos_prob]
+                    # Two outputs (softmax)
+                    probs = [float(p) for p in prediction[0]]
+                    pcos_prob = probs[1]
                 
-                predictions[model_name] = pcos_prob
+                per_model_predictions[model_name] = probs
+                per_model_scores[model_name] = pcos_prob
                 logger.debug(f"Face {model_name} prediction: {pcos_prob:.3f}")
                 
             except Exception as e:
@@ -261,7 +277,71 @@ class FaceManager:
                 # Don't include failed models in ensemble
                 continue
         
-        return predictions
+        if not per_model_predictions:
+            return {
+                "per_model": {},
+                "per_model_scores": {},
+                "ensemble": {"prob": 0.0, "probs": [0.5, 0.5], "label": "unknown", "weights": {}},
+                "labels": get_model_labels('face')
+            }
+        
+        # Compute ensemble prediction
+        ensemble_result = self._compute_ensemble(per_model_predictions)
+        
+        return {
+            "per_model": per_model_predictions,
+            "per_model_scores": per_model_scores,
+            "ensemble": ensemble_result,
+            "labels": get_model_labels('face')
+        }
+    
+    def _compute_ensemble(self, per_model_predictions: Dict[str, List[float]]) -> Dict[str, Any]:
+        """
+        Compute weighted ensemble prediction from per-model results
+        
+        Args:
+            per_model_predictions: Dictionary mapping model names to probability lists
+            
+        Returns:
+            Dictionary with ensemble results
+        """
+        if not per_model_predictions:
+            return {"prob": 0.0, "probs": [0.5, 0.5], "label": "unknown", "weights": {}}
+        
+        # Get weights for available models
+        available_models = list(per_model_predictions.keys())
+        weights = {name: self.pcos_models[name]["weight"] for name in available_models}
+        
+        # Compute weighted average for each class
+        num_classes = len(next(iter(per_model_predictions.values())))
+        ensemble_probs = [0.0] * num_classes
+        
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            for model_name, probs in per_model_predictions.items():
+                weight = weights[model_name]
+                for i, prob in enumerate(probs):
+                    ensemble_probs[i] += prob * weight / total_weight
+        else:
+            # Equal weighting fallback
+            for probs in per_model_predictions.values():
+                for i, prob in enumerate(probs):
+                    ensemble_probs[i] += prob / len(per_model_predictions)
+        
+        # Determine final prediction
+        max_prob_idx = np.argmax(ensemble_probs)
+        max_prob = ensemble_probs[max_prob_idx]
+        
+        labels = get_model_labels('face')
+        predicted_label = labels[max_prob_idx] if max_prob_idx < len(labels) else "unknown"
+        
+        return {
+            "prob": float(max_prob),
+            "probs": ensemble_probs,
+            "label": predicted_label,
+            "weights": weights,
+            "models_used": len(available_models)
+        }
     
     async def process_face_image(self, file: UploadFile) -> Dict[str, Any]:
         """
@@ -298,9 +378,9 @@ class FaceManager:
                 "face_scores": [],
                 "face_pred": None,
                 "face_risk": "unknown",
+                "face_models": {},
                 "per_model": {},
-                "ensemble": None,
-                "models_used": []
+                "ensemble_score": 0.0
             }
             
             # Check if we should skip PCOS analysis for males
@@ -312,38 +392,24 @@ class FaceManager:
             
             # Run PCOS prediction for females
             if gender_result["label"] == "female":
-                pcos_predictions = await self.predict_pcos(image_bytes)
+                pcos_results = await self.predict_pcos_ensemble(image_bytes)
                 
-                if pcos_predictions:
-                    # Store per-model predictions
-                    result["per_model"] = pcos_predictions
-                    result["models_used"] = list(pcos_predictions.keys())
+                if pcos_results["per_model"]:
+                    # Store detailed results
+                    result["face_models"] = pcos_results["per_model"]
+                    result["per_model"] = pcos_results["per_model_scores"]
                     
-                    # Extract weights for ensemble (only for loaded models)
-                    weights = {name: self.pcos_models[name]["weight"] for name in pcos_predictions.keys()}
+                    # Get ensemble results
+                    ensemble = pcos_results["ensemble"]
+                    ensemble_probs = ensemble["probs"]
+                    ensemble_score = ensemble["prob"]
                     
-                    # Run ensemble
-                    ensemble_result = self.ensemble_manager.combine_modalities(
-                        face_score=sum(pcos_predictions.values()) / len(pcos_predictions.values()) if pcos_predictions else 0.0,
-                        xray_score=None
-                    )
-                    final_score = ensemble_result["score"]
-                    
-                    # Store ensemble metadata
-                    from schemas import EnsembleResult
-                    result["ensemble"] = EnsembleResult(
-                        method=ensemble_result["method"],
-                        score=final_score,
-                        models_used=ensemble_result["models_used"],
-                        weights_used=ensemble_result.get("weights_used")
-                    )
-                    
-                    # Convert predictions to list for face_scores (non_pcos, pcos format)
-                    non_pcos_score = 1.0 - final_score
-                    result["face_scores"] = [non_pcos_score, final_score]
+                    # Store ensemble results
+                    result["face_scores"] = ensemble_probs
+                    result["ensemble_score"] = ensemble_score
                     
                     # Determine prediction label
-                    risk_level = get_risk_level(final_score)
+                    risk_level = get_risk_level(ensemble_score)
                     result["face_risk"] = risk_level
                     
                     if risk_level == "high":
@@ -352,8 +418,6 @@ class FaceManager:
                         result["face_pred"] = "Moderate PCOS indicators in facial analysis"
                     else:
                         result["face_pred"] = "No significant PCOS indicators in facial analysis"
-                    
-                    result["ensemble_score"] = final_score
                 else:
                     result["face_pred"] = "No PCOS models available for analysis"
                     result["face_scores"] = []
@@ -370,4 +434,15 @@ class FaceManager:
     
     def get_model_status(self) -> Dict[str, Dict[str, Any]]:
         """Get current status of all face models"""
-        return self.model_status.copy()
+        status = self.model_status.copy()
+        
+        # Add detailed model information
+        status["pcos_models"] = {}
+        for model_name, model_data in self.pcos_models.items():
+            status["pcos_models"][model_name] = {
+                "loaded": True,
+                "path": model_data["path"],
+                "weight": model_data["weight"]
+            }
+        
+        return status

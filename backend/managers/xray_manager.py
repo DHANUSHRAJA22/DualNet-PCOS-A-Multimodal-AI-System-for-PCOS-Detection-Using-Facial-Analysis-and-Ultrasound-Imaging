@@ -31,19 +31,19 @@ except ImportError:
 
 from config import (
     settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR, get_risk_level,
-    discover_models, load_model_labels, get_ensemble_weights, normalize_weights
+    get_available_xray_models, get_model_labels, get_ensemble_weights, normalize_weights,
+    XRAY_MODELS, BEST_XRAY_MODEL, XRAY_ENSEMBLE_WEIGHTS
 )
 from utils.validators import validate_image, get_safe_filename
-from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
 
 class XrayManager:
     """
-    Manages automatic discovery and inference of X-ray analysis models
+    Manages ensemble inference of X-ray analysis models
     
-    Automatically discovers all .h5 models in xray directory, loads YOLO for detection,
-    and supports both single model and ensemble inference with ROI processing.
+    Loads multiple X-ray models and YOLO for detection, performs ensemble inference
+    with configurable weights and ROI processing.
     """
     
     def __init__(self):
@@ -51,8 +51,7 @@ class XrayManager:
         self.yolo_model = None
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_detect_objects = False
-        self.ensemble_weights = get_ensemble_weights()
-        self.ensemble_manager = EnsembleManager()
+        self.ensemble_weights = get_ensemble_weights('xray')
         
         # Model status tracking
         self.model_status = {
@@ -71,8 +70,8 @@ class XrayManager:
     
     def can_lazy_load_pcos(self) -> bool:
         """Check if any PCOS models can be lazy loaded"""
-        discovered_models = discover_models(XRAY_MODELS_DIR)
-        return len(discovered_models) > 0
+        available_models = get_available_xray_models()
+        return len(available_models) > 0
     
     def _load_models(self) -> None:
         """Load all X-ray analysis models"""
@@ -112,39 +111,39 @@ class XrayManager:
             self.model_status["yolo"]["error"] = str(e)
     
     def _load_pcos_models(self) -> None:
-        """Discover and load all PCOS classification models"""
-        # Discover all .h5 models in xray directory
-        discovered_models = discover_models(XRAY_MODELS_DIR)
+        """Load PCOS classification models with ensemble support"""
+        # Get available models
+        available_models = get_available_xray_models()
         
-        logger.info(f"Discovered X-ray models: {list(discovered_models.keys())}")
+        logger.info(f"Available X-ray models: {list(available_models.keys())}")
         
         loaded_count = 0
         
         # Load models based on USE_ENSEMBLE setting
         if settings.USE_ENSEMBLE:
-            models_to_load = discovered_models
+            models_to_load = available_models
         else:
-            # Load only the first available model for single model mode
-            if discovered_models:
-                first_model = next(iter(discovered_models.items()))
-                models_to_load = {first_model[0]: first_model[1]}
+            # Load only the best single model
+            if BEST_XRAY_MODEL in available_models:
+                models_to_load = {BEST_XRAY_MODEL: available_models[BEST_XRAY_MODEL]}
             else:
-                models_to_load = {}
+                # Fallback to first available model
+                if available_models:
+                    first_model = next(iter(available_models.items()))
+                    models_to_load = {first_model[0]: first_model[1]}
+                else:
+                    models_to_load = {}
         
         for model_name, model_path in models_to_load.items():
             try:
                 # Load model
                 model = tf.keras.models.load_model(str(model_path), compile=False)
                 
-                # Load corresponding labels
-                labels = load_model_labels(model_path)
-                
                 # Get weight for this model
                 weight = self.ensemble_weights.get(model_name, 1.0)
                 
                 self.pcos_models[model_name] = {
                     "model": model,
-                    "labels": labels,
                     "path": str(model_path),
                     "weight": weight
                 }
@@ -153,6 +152,7 @@ class XrayManager:
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
+                continue
         
         # Normalize weights for loaded models
         if self.pcos_models:
@@ -164,7 +164,7 @@ class XrayManager:
                     self.pcos_models[model_name]["weight"] = weight
         
         self.model_status["xray"]["loaded"] = loaded_count > 0
-        self.model_status["xray"]["available"] = len(discovered_models) > 0
+        self.model_status["xray"]["available"] = len(available_models) > 0
         
         if loaded_count > 0:
             logger.info(f"Successfully loaded {loaded_count} X-ray models with normalized weights")
@@ -258,7 +258,7 @@ class XrayManager:
             
         return detections, vis_path
     
-    async def predict_pcos_roi(self, image_bytes: bytes, roi_box: List[float]) -> Dict[str, Any]:
+    async def predict_pcos_ensemble_roi(self, image_bytes: bytes, roi_box: List[float]) -> Dict[str, Any]:
         """
         Predict PCOS from a specific ROI using ensemble of all loaded models
         
@@ -270,7 +270,7 @@ class XrayManager:
             Dictionary with per-model predictions and ensemble result
         """
         per_model_predictions = {}
-        per_model_labels = {}
+        per_model_scores = {}
         
         try:
             # Open image and crop ROI
@@ -285,7 +285,6 @@ class XrayManager:
             for model_name, model_data in self.pcos_models.items():
                 try:
                     model = model_data["model"]
-                    labels = model_data["labels"]
                     
                     # Use standard input size (224x224 for most models)
                     input_size = (224, 224)
@@ -304,10 +303,11 @@ class XrayManager:
                     else:
                         # Multiple outputs (softmax)
                         probs = [float(p) for p in prediction[0]]
+                        pcos_prob = probs[1]
                     
                     # Store per-model results
                     per_model_predictions[model_name] = probs
-                    per_model_labels[model_name] = labels
+                    per_model_scores[model_name] = pcos_prob
                     
                     logger.debug(f"X-ray {model_name} ROI prediction: {probs}")
                     
@@ -321,8 +321,9 @@ class XrayManager:
         if not per_model_predictions:
             return {
                 "per_model": {},
+                "per_model_scores": {},
                 "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": ["normal", "pcos"]
+                "labels": get_model_labels('xray')
             }
         
         # Compute ensemble prediction
@@ -330,12 +331,12 @@ class XrayManager:
         
         return {
             "per_model": per_model_predictions,
-            "per_model_labels": per_model_labels,
+            "per_model_scores": per_model_scores,
             "ensemble": ensemble_result,
-            "labels": list(per_model_labels.values())[0] if per_model_labels else ["normal", "pcos"]
+            "labels": get_model_labels('xray')
         }
     
-    async def predict_pcos_full_image(self, image_bytes: bytes) -> Dict[str, Any]:
+    async def predict_pcos_ensemble_full_image(self, image_bytes: bytes) -> Dict[str, Any]:
         """
         Predict PCOS from full X-ray image using ensemble of all loaded models
         
@@ -346,12 +347,11 @@ class XrayManager:
             Dictionary with per-model predictions and ensemble result
         """
         per_model_predictions = {}
-        per_model_labels = {}
+        per_model_scores = {}
         
         for model_name, model_data in self.pcos_models.items():
             try:
                 model = model_data["model"]
-                labels = model_data["labels"]
                 
                 # Use standard input size (224x224 for most models)
                 input_size = (224, 224)
@@ -370,10 +370,11 @@ class XrayManager:
                 else:
                     # Multiple outputs (softmax)
                     probs = [float(p) for p in prediction[0]]
+                    pcos_prob = probs[1]
                 
                 # Store per-model results
                 per_model_predictions[model_name] = probs
-                per_model_labels[model_name] = labels
+                per_model_scores[model_name] = pcos_prob
                 
                 logger.debug(f"X-ray {model_name} full image prediction: {probs}")
                 
@@ -384,8 +385,9 @@ class XrayManager:
         if not per_model_predictions:
             return {
                 "per_model": {},
+                "per_model_scores": {},
                 "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": ["normal", "pcos"]
+                "labels": get_model_labels('xray')
             }
         
         # Compute ensemble prediction
@@ -393,9 +395,9 @@ class XrayManager:
         
         return {
             "per_model": per_model_predictions,
-            "per_model_labels": per_model_labels,
+            "per_model_scores": per_model_scores,
             "ensemble": ensemble_result,
-            "labels": list(per_model_labels.values())[0] if per_model_labels else ["normal", "pcos"]
+            "labels": get_model_labels('xray')
         }
     
     def _compute_ensemble(self, per_model_predictions: Dict[str, List[float]]) -> Dict[str, Any]:
@@ -436,8 +438,7 @@ class XrayManager:
         max_prob = ensemble_probs[max_prob_idx]
         
         # Use first model's labels as reference
-        first_model = next(iter(self.pcos_models.values()))
-        labels = first_model["labels"]
+        labels = get_model_labels('xray')
         predicted_label = labels[max_prob_idx] if max_prob_idx < len(labels) else "unknown"
         
         return {
@@ -483,95 +484,65 @@ class XrayManager:
                 "found_labels": [],
                 "xray_pred": None,
                 "xray_risk": "unknown",
-                "detections": [],
-                "per_roi": [],
+                "xray_models": {},
                 "per_model": {},
-                "ensemble": None,
-                "models_used": []
+                "ensemble_score": 0.0
             }
             
             # Extract found labels from detections
             if detections:
                 result["found_labels"] = [det["label"] for det in detections]
-                
-                # Convert detections to schema format
-                from schemas import Detection
-                result["detections"] = [
-                    Detection(
-                        box=det["box"],
-                        conf=det["conf"],
-                        label=det["label"]
-                    ) for det in detections
-                ]
             
             # Process ROIs if detections found
             if detections:
-                roi_predictions_list = []
-                roi_results = []
+                all_roi_predictions = {}
+                all_roi_scores = {}
                 
                 for roi_id, detection in enumerate(detections):
-                    roi_predictions = await self.predict_pcos_roi(image_bytes, detection["box"])
-                    if roi_predictions:
-                        roi_predictions_list.append(roi_predictions)
+                    roi_results = await self.predict_pcos_ensemble_roi(image_bytes, detection["box"])
+                    if roi_results["per_model"]:
+                        # Accumulate predictions across ROIs
+                        for model_name, probs in roi_results["per_model"].items():
+                            if model_name not in all_roi_predictions:
+                                all_roi_predictions[model_name] = []
+                            all_roi_predictions[model_name].append(probs)
                         
-                        # Create ROI result with ensemble
-                        weights = {name: self.pcos_models[name]["weight"] for name in roi_predictions.keys()}
-                        roi_ensemble = self.ensemble_manager.combine_xray_models(roi_predictions, weights)
-                        
-                        from schemas import ROIResult, EnsembleResult
-                        roi_result = ROIResult(
-                            roi_id=roi_id,
-                            box=detection["box"],
-                            per_model=roi_predictions,
-                            ensemble=EnsembleResult(
-                                method=roi_ensemble["method"],
-                                score=roi_ensemble["score"],
-                                models_used=roi_ensemble["models_used"],
-                                weights_used=roi_ensemble.get("weights_used")
-                            )
-                        )
-                        roi_results.append(roi_result)
-                
-                result["per_roi"] = roi_results
+                        for model_name, score in roi_results["per_model_scores"].items():
+                            if model_name not in all_roi_scores:
+                                all_roi_scores[model_name] = []
+                            all_roi_scores[model_name].append(score)
                 
                 # Ensemble ROI predictions
-                if roi_predictions_list:
-                    # Average predictions across all ROIs
-                    all_models = set()
-                    for roi_pred in roi_predictions_list:
-                        all_models.update(roi_pred.keys())
-                    
+                if all_roi_predictions:
+                    # Average predictions across all ROIs for each model
                     averaged_predictions = {}
-                    for model_name in all_models:
-                        scores = [roi_pred.get(model_name, 0) for roi_pred in roi_predictions_list if model_name in roi_pred]
-                        if scores:
-                            averaged_predictions[model_name] = sum(scores) / len(scores)
+                    averaged_scores = {}
+                    
+                    for model_name, roi_probs_list in all_roi_predictions.items():
+                        # Average probabilities across ROIs
+                        num_classes = len(roi_probs_list[0])
+                        avg_probs = [0.0] * num_classes
+                        for probs in roi_probs_list:
+                            for i, prob in enumerate(probs):
+                                avg_probs[i] += prob / len(roi_probs_list)
+                        averaged_predictions[model_name] = avg_probs
+                    
+                    for model_name, roi_scores_list in all_roi_scores.items():
+                        # Average scores across ROIs
+                        averaged_scores[model_name] = sum(roi_scores_list) / len(roi_scores_list)
                     
                     # Store per-model predictions
-                    result["per_model"] = averaged_predictions
-                    result["models_used"] = list(averaged_predictions.keys())
+                    result["xray_models"] = averaged_predictions
+                    result["per_model"] = averaged_scores
                     
-                    # Extract weights for ensemble (only for loaded models)
-                    weights = {name: self.pcos_models[name]["weight"] for name in averaged_predictions.keys()}
+                    # Compute ensemble
+                    ensemble_result = self._compute_ensemble(averaged_predictions)
+                    ensemble_score = ensemble_result["prob"]
                     
-                    # Run ensemble
-                    ensemble_result = self.ensemble_manager.combine_modalities(
-                        face_score=None,
-                        xray_score=sum(averaged_predictions.values()) / len(averaged_predictions.values()) if averaged_predictions else 0.0
-                    )
-                    final_score = ensemble_result["score"]
-                    
-                    # Store ensemble metadata
-                    from schemas import EnsembleResult
-                    result["ensemble"] = EnsembleResult(
-                        method=ensemble_result["method"],
-                        score=final_score,
-                        models_used=ensemble_result["models_used"],
-                        weights_used=ensemble_result.get("weights_used")
-                    )
+                    result["ensemble_score"] = ensemble_score
                     
                     # Determine prediction label and risk
-                    risk_level = get_risk_level(final_score)
+                    risk_level = get_risk_level(ensemble_score)
                     result["xray_risk"] = risk_level
                     
                     if risk_level == "high":
@@ -580,38 +551,26 @@ class XrayManager:
                         result["xray_pred"] = "Moderate PCOS indicators in X-ray"
                     else:
                         result["xray_pred"] = "No PCOS symptoms detected in X-ray"
-                    
-                    result["ensemble_score"] = final_score
                 else:
                     result["xray_pred"] = "No PCOS models available for ROI analysis"
             
             else:
                 # No detections - classify full image
-                full_image_predictions = await self.predict_pcos_full_image(image_bytes)
+                full_image_results = await self.predict_pcos_ensemble_full_image(image_bytes)
                 
-                if full_image_predictions:
+                if full_image_results["per_model"]:
                     # Store per-model predictions
-                    result["per_model"] = full_image_predictions
-                    result["models_used"] = list(full_image_predictions.keys())
+                    result["xray_models"] = full_image_results["per_model"]
+                    result["per_model"] = full_image_results["per_model_scores"]
                     
-                    # Extract weights for ensemble (only for loaded models)
-                    weights = {name: self.pcos_models[name]["weight"] for name in full_image_predictions.keys()}
+                    # Get ensemble results
+                    ensemble = full_image_results["ensemble"]
+                    ensemble_score = ensemble["prob"]
                     
-                    # Run ensemble
-                    ensemble_result = self.ensemble_manager.combine_xray_models(full_image_predictions, weights)
-                    final_score = ensemble_result["score"]
-                    
-                    # Store ensemble metadata
-                    from schemas import EnsembleResult
-                    result["ensemble"] = EnsembleResult(
-                        method=ensemble_result["method"],
-                        score=final_score,
-                        models_used=ensemble_result["models_used"],
-                        weights_used=ensemble_result.get("weights_used")
-                    )
+                    result["ensemble_score"] = ensemble_score
                     
                     # Determine prediction label and risk
-                    risk_level = get_risk_level(final_score)
+                    risk_level = get_risk_level(ensemble_score)
                     result["xray_risk"] = risk_level
                     
                     if risk_level == "high":
@@ -620,8 +579,6 @@ class XrayManager:
                         result["xray_pred"] = "Moderate PCOS indicators in X-ray"
                     else:
                         result["xray_pred"] = "No PCOS symptoms detected in X-ray"
-                    
-                    result["ensemble_score"] = final_score
                 else:
                     result["xray_pred"] = "No PCOS models available for analysis"
             
@@ -644,8 +601,7 @@ class XrayManager:
             status["pcos_models"][model_name] = {
                 "loaded": True,
                 "path": model_data["path"],
-                "weight": model_data["weight"],
-                "labels": model_data["labels"]
+                "weight": model_data["weight"]
             }
         
         return status

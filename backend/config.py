@@ -2,13 +2,13 @@
 Configuration settings for PCOS Analyzer Backend
 
 Centralized configuration with environment variable support and automatic model discovery.
-All model filenames are discovered dynamically from the models directories.
+Supports ensemble inference with multiple models per modality.
 """
 
 import os
 from pathlib import Path
 from pydantic import BaseModel
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent
@@ -77,6 +77,55 @@ FACE_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 XRAY_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 YOLO_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Model Configuration
+FACE_MODELS = {
+    "VGG16": "vgg16_pcos.h5",
+    "ResNet50": "resnet50_pcos.h5", 
+    "EfficientNetB0": "efficientnetb0_pcos.h5",
+    "EfficientNetB1": "efficientnetb1_pcos.h5",
+    "EfficientNetB2": "efficientnetb2_pcos.h5",
+    "EfficientNetB3": "efficientnetb3_pcos.h5"
+}
+
+XRAY_MODELS = {
+    "VGG16": "vgg16_xray.h5",
+    "ResNet50": "resnet50_xray.h5",
+    "EfficientNetB0": "efficientnetb0_xray.h5"
+}
+
+# Best single models (fallback when ensemble disabled)
+BEST_FACE_MODEL = "VGG16"
+BEST_XRAY_MODEL = "VGG16"
+
+# Model ensemble weights (can be overridden by environment variables)
+FACE_ENSEMBLE_WEIGHTS = {
+    "VGG16": 0.2,
+    "ResNet50": 0.2,
+    "EfficientNetB0": 0.2,
+    "EfficientNetB1": 0.2,
+    "EfficientNetB2": 0.1,
+    "EfficientNetB3": 0.1
+}
+
+XRAY_ENSEMBLE_WEIGHTS = {
+    "VGG16": 0.4,
+    "ResNet50": 0.35,
+    "EfficientNetB0": 0.25
+}
+
+# Class labels
+FACE_LABELS = ["non_pcos", "pcos"]
+XRAY_LABELS = ["normal", "pcos"]
+
+# Model input sizes
+FACE_IMAGE_SIZE = (224, 224)
+XRAY_IMAGE_SIZE = (224, 224)
+XRAY_YOLO_SIZE = (640, 640)
+XRAY_VIT_SIZE = (224, 224)
+
+# Image processing
+IMAGE_QUALITY = 90
+
 def get_risk_level(score: float) -> str:
     """Classify risk level based on probability score"""
     if score < settings.RISK_LOW_THRESHOLD:
@@ -86,69 +135,73 @@ def get_risk_level(score: float) -> str:
     else:
         return "high"
 
-def discover_models(models_dir: Path) -> Dict[str, Path]:
+def get_available_face_models() -> Dict[str, Path]:
     """
-    Discover all .h5 model files in a directory
+    Get available face models from the face models directory
     
-    Args:
-        models_dir: Directory to search for models
-        
     Returns:
-        Dictionary mapping model names to file paths
+        Dictionary mapping model names to file paths for available models
     """
-    models = {}
-    if models_dir.exists():
-        for model_file in models_dir.glob("*.h5"):
-            model_name = model_file.stem
-            models[model_name] = model_file
-    return models
+    available = {}
+    for model_name, filename in FACE_MODELS.items():
+        model_path = FACE_MODELS_DIR / filename
+        if model_path.exists():
+            available[model_name] = model_path
+    return available
 
-def load_model_labels(model_path: Path) -> List[str]:
+def get_available_xray_models() -> Dict[str, Path]:
     """
-    Load class labels for a model from corresponding .labels.txt file
+    Get available X-ray models from the xray models directory
+    
+    Returns:
+        Dictionary mapping model names to file paths for available models
+    """
+    available = {}
+    for model_name, filename in XRAY_MODELS.items():
+        model_path = XRAY_MODELS_DIR / filename
+        if model_path.exists():
+            available[model_name] = model_path
+    return available
+
+def get_model_labels(model_type: str) -> List[str]:
+    """
+    Get class labels for a model type
     
     Args:
-        model_path: Path to the .h5 model file
+        model_type: Type of model ('face' or 'xray')
         
     Returns:
         List of class labels
     """
-    labels_path = model_path.with_suffix('.labels.txt')
-    
-    try:
-        if labels_path.exists():
-            with open(labels_path, 'r') as f:
-                content = f.read().strip()
-                
-                # Try JSON format first
-                if content.startswith('[') and content.endswith(']'):
-                    import json
-                    labels = json.loads(content)
-                else:
-                    # Plain text format, one label per line
-                    labels = [line.strip() for line in content.split('\n') if line.strip()]
-                
-                return labels
-        else:
-            # Default labels if file doesn't exist
-            return ["non_pcos", "pcos"]
-            
-    except Exception as e:
-        print(f"Warning: Could not load labels for {model_path}: {e}")
-        return ["non_pcos", "pcos"]
+    if model_type == 'face':
+        return FACE_LABELS
+    elif model_type == 'xray':
+        return XRAY_LABELS
+    else:
+        return ["class_0", "class_1"]
 
-def get_ensemble_weights() -> Dict[str, float]:
+def get_ensemble_weights(model_type: str) -> Dict[str, float]:
     """
-    Get ensemble weights from environment variables or defaults
+    Get ensemble weights for a model type from environment variables or defaults
+    
+    Args:
+        model_type: Type of model ('face' or 'xray')
     
     Returns:
         Dictionary mapping model names to weights
     """
-    weights = settings.DEFAULT_ENSEMBLE_WEIGHTS.copy()
+    if model_type == 'face':
+        weights = FACE_ENSEMBLE_WEIGHTS.copy()
+        prefix = "FACE_ENSEMBLE_WEIGHT_"
+    elif model_type == 'xray':
+        weights = XRAY_ENSEMBLE_WEIGHTS.copy()
+        prefix = "XRAY_ENSEMBLE_WEIGHT_"
+    else:
+        return {}
     
     # Override with environment variables if provided
     for model_name in weights.keys():
-        env_var = f"ENSEMBLE_WEIGHT_{model_name.upper()}"
+        env_var = f"{prefix}{model_name.upper()}"
         if env_var in os.environ:
             try:
                 weights[model_name] = float(os.environ[env_var])
