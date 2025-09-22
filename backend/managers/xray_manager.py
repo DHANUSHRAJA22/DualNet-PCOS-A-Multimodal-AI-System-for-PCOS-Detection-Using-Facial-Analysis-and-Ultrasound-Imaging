@@ -34,6 +34,7 @@ from config import (
     discover_models, load_model_labels, get_ensemble_weights, normalize_weights
 )
 from utils.validators import validate_image, get_safe_filename
+from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class XrayManager:
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_detect_objects = False
         self.ensemble_weights = get_ensemble_weights()
+        self.ensemble_manager = EnsembleManager()
         
         # Model status tracking
         self.model_status = {
@@ -553,7 +555,10 @@ class XrayManager:
                     weights = {name: self.pcos_models[name]["weight"] for name in averaged_predictions.keys()}
                     
                     # Run ensemble
-                    ensemble_result = self.ensemble_manager.combine_xray_models(averaged_predictions, weights)
+                    ensemble_result = self.ensemble_manager.combine_modalities(
+                        face_score=None,
+                        xray_score=sum(averaged_predictions.values()) / len(averaged_predictions.values()) if averaged_predictions else 0.0
+                    )
                     final_score = ensemble_result["score"]
                     
                     # Store ensemble metadata

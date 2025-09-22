@@ -295,8 +295,8 @@ async def structured_predict(
                 
                 # Update debug info
                 debug_info["models_used"].extend(face_result.get("models_used", []))
-                    if face_result.get("ensemble") and hasattr(face_result["ensemble"], "weights_used"):
-                        debug_info["weights"]["face"] = face_result["ensemble"].weights_used
+                if face_result.get("ensemble") and hasattr(face_result["ensemble"], "weights_used"):
+                    debug_info["weights"]["face"] = face_result["ensemble"].weights_used
                 
                 # Check for male face warning
                 if face_result.get("gender", {}).get("label") == "male":
@@ -424,29 +424,28 @@ async def legacy_predict(
         
         if structured_response.ok:
             # Extract face data
-            face_modality = next((m for m in structured_response.modalities if m["type"] == "face"), None)
+            face_modality = next((m for m in structured_response.modalities if m.type == "face"), None)
             if face_modality:
-                legacy_response.face_pred = face_modality["label"]
-                legacy_response.face_scores = face_modality["scores"]
-                legacy_response.face_img = face_modality.get("original_img")
-                legacy_response.face_risk = face_modality["risk"]
+                legacy_response.face_pred = face_modality.label
+                legacy_response.face_scores = face_modality.scores
+                legacy_response.face_img = face_modality.original_img
+                legacy_response.face_risk = face_modality.risk
             
             # Extract X-ray data
-            xray_modality = next((m for m in structured_response.modalities if m["type"] == "xray"), None)
+            xray_modality = next((m for m in structured_response.modalities if m.type == "xray"), None)
             if xray_modality:
-                legacy_response.xray_pred = xray_modality["label"]
-                legacy_response.xray_img = xray_modality.get("original_img")
-                legacy_response.yolo_vis = xray_modality.get("visualization")
-                legacy_response.found_labels = xray_modality.get("found_labels")
-                legacy_response.xray_risk = xray_modality["risk"]
+                legacy_response.xray_pred = xray_modality.label
+                legacy_response.xray_img = xray_modality.original_img
+                legacy_response.yolo_vis = xray_modality.visualization
+                legacy_response.found_labels = xray_modality.found_labels
+                legacy_response.xray_risk = xray_modality.risk
             
             # Final results
-            legacy_response.combined = structured_response.final["explanation"]
-            legacy_response.overall_risk = structured_response.final["risk"]
+            legacy_response.combined = structured_response.final.explanation
+            legacy_response.overall_risk = structured_response.final.risk
             legacy_response.message = "ok"
         else:
             # Handle error case
-            legacy_response.message = "; ".join(structured_response.warnings) if structured_response.warnings else "Analysis failed"
         
         return legacy_response
         

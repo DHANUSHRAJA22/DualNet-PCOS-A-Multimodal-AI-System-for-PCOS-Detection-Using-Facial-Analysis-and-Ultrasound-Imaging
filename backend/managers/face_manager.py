@@ -25,6 +25,7 @@ from config import (
     discover_models, load_model_labels, get_ensemble_weights, normalize_weights
 )
 from utils.validators import validate_image, get_safe_filename
+from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class FaceManager:
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_predict_gender = False
         self.ensemble_weights = get_ensemble_weights()
+        self.ensemble_manager = EnsembleManager()
         
         # Model status tracking
         self.model_status = {
@@ -321,7 +323,10 @@ class FaceManager:
                     weights = {name: self.pcos_models[name]["weight"] for name in pcos_predictions.keys()}
                     
                     # Run ensemble
-                    ensemble_result = self.ensemble_manager.combine_face_models(pcos_predictions, weights)
+                    ensemble_result = self.ensemble_manager.combine_modalities(
+                        face_score=sum(pcos_predictions.values()) / len(pcos_predictions.values()) if pcos_predictions else 0.0,
+                        xray_score=None
+                    )
                     final_score = ensemble_result["score"]
                     
                     # Store ensemble metadata

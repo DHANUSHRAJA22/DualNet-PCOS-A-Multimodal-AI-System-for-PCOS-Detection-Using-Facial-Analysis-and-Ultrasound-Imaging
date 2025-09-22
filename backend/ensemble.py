@@ -52,6 +52,7 @@ class EnsembleManager:
                 "combined": "No valid predictions available for risk assessment",
                 "modalities_used": [],
                 "final_score": 0.0,
+                "score": 0.0,
                 "fusion_method": "none",
                 "confidence": 0.0
             }
@@ -91,6 +92,7 @@ class EnsembleManager:
             "combined": explanation,
             "modalities_used": modalities_used,
             "final_score": float(final_score),
+            "score": float(final_score),
             "fusion_method": "threshold",
             "confidence": float(final_score),
             "thresholds_used": {
@@ -172,6 +174,7 @@ class EnsembleManager:
             "combined": explanation,
             "modalities_used": modalities_used,
             "final_score": float(final_score),
+            "score": float(final_score),
             "fusion_method": "discrete",
             "confidence": float(final_score),
             "high_risk_count": high_count,
