@@ -1,6 +1,6 @@
 import { createBrowserRouter } from 'react-router-dom'
 import { IndexPage } from './pages/Index'
-import { ResultsPage } from './pages/Results'
+import { Results } from './pages/Results'
 
 export const router = createBrowserRouter([
   {
@@ -9,6 +9,6 @@ export const router = createBrowserRouter([
   },
   {
     path: '/results',
-    element: <ResultsPage />,
+    element: <Results />,
   },
 ])
