@@ -1,6 +1,6 @@
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertCircle } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Info } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -9,35 +9,16 @@ import { RiskGauge } from '../components/RiskGauge';
 import { AIPerformanceMetrics } from '../components/AIPerformanceMetrics';
 import { ConfidenceVisualization } from '../components/ConfidenceVisualization';
 import { MedicalDisclaimer } from '../components/MedicalDisclaimer';
-
-interface AnalysisResult {
-  face_pred?: string;
-  face_scores?: number[];
-  face_confidence?: number;
-  xray_pred?: string;
-  xray_scores?: number[];
-  xray_confidence?: number;
-  overall_risk?: string;
-  combined_explanation?: string;
-  final?: {
-    risk: string;
-    confidence: number;
-    explanation: string;
-  };
-  face_models?: Record<string, number[]>;
-  xray_models?: Record<string, number[]>;
-  ensemble_score?: number;
-  processing_time?: number;
-}
+import type { StructuredPredictionResponse, EnhancedHealthResponse } from '../lib/api';
 
 export function Results() {
   const location = useLocation();
   const navigate = useNavigate();
   
-  const result = location.state?.result as AnalysisResult;
-  const uploadedImages = location.state?.uploadedImages as { face?: string; xray?: string };
+  const results = location.state?.results as StructuredPredictionResponse;
+  const healthDetails = location.state?.healthDetails as EnhancedHealthResponse;
 
-  if (!result) {
+  if (!results) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
         <Card className="w-full max-w-md">
@@ -68,10 +49,17 @@ export function Results() {
     );
   }
 
-  // Extract risk and confidence from the result
-  const finalRisk = result.final?.risk || result.overall_risk || 'unknown';
-  const finalConfidence = result.final?.confidence || result.ensemble_score || 0;
-  const explanation = result.final?.explanation || result.combined_explanation || '';
+  // Extract risk and confidence from structured response
+  const finalRisk = results.final.risk;
+  const finalConfidence = results.final.confidence;
+  const explanation = results.final.explanation;
+  const processingTime = results.processing_time_ms;
+  
+  // Get backend thresholds from health details
+  const thresholds = healthDetails?.config ? {
+    low: healthDetails.config.risk_thresholds?.low || 0.33,
+    high: healthDetails.config.risk_thresholds?.high || 0.66
+  } : { low: 0.33, high: 0.66 };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
@@ -90,6 +78,20 @@ export function Results() {
           <div></div>
         </div>
 
+        {/* Warnings */}
+        {results.warnings && results.warnings.length > 0 && (
+          <Alert className="border-orange-200 bg-orange-50">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              <div className="space-y-1">
+                {results.warnings.map((warning, index) => (
+                  <div key={index}>{warning}</div>
+                ))}
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
+
         {/* Risk Overview */}
         <Card>
           <CardHeader>
@@ -100,17 +102,34 @@ export function Results() {
               <RiskGauge 
                 risk={finalRisk}
                 confidence={finalConfidence}
+                thresholds={thresholds}
               />
               <div className="space-y-4">
                 <div>
                   <h3 className="font-semibold text-gray-700 mb-2">Analysis Summary</h3>
                   <p className="text-gray-600 text-sm leading-relaxed">
-                    {explanation || 'Analysis completed successfully.'}
+                    {explanation}
                   </p>
                 </div>
-                {result.processing_time && (
+                {processingTime && (
                   <div className="text-sm text-gray-500">
-                    Processing time: {result.processing_time.toFixed(2)}s
+                    Processing time: {(processingTime / 1000).toFixed(2)}s
+                  </div>
+                )}
+                
+                {/* Backend Configuration Info */}
+                {healthDetails && (
+                  <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Info className="h-4 w-4 text-blue-600" />
+                      <span className="text-sm font-medium text-blue-800">Backend Configuration</span>
+                    </div>
+                    <div className="text-xs text-blue-700 space-y-1">
+                      <div>Version: {healthDetails.version}</div>
+                      <div>Fusion Mode: {results.final.fusion_mode}</div>
+                      <div>Risk Thresholds: Low &lt; {(thresholds.low * 100).toFixed(0)}%, High ≥ {(thresholds.high * 100).toFixed(0)}%</div>
+                      <div>Models Used: {results.debug?.models_used?.length || 0}</div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -120,45 +139,28 @@ export function Results() {
 
         {/* Detailed Results */}
         <div className="grid lg:grid-cols-2 gap-6">
-          {/* Face Analysis */}
-          {result.face_pred && (
+          {results.modalities.map((modality, index) => (
             <ResultCard
-              title="Facial Analysis"
-              prediction={result.face_pred}
-              confidence={result.face_confidence || 0}
-              scores={result.face_scores || []}
-              image={uploadedImages?.face}
-              models={result.face_models}
+              key={`${modality.type}-${index}`}
+              title={modality.type === 'face' ? 'Facial Analysis' : 'X-ray Analysis'}
+              prediction={modality.label}
+              scores={modality.scores}
+              originalImage={modality.original_img}
+              visualizationImage={modality.visualization}
+              foundLabels={modality.found_labels}
+              riskLevel={modality.risk as 'low' | 'moderate' | 'high' | 'unknown'}
+              confidence={finalConfidence}
+              thresholds={thresholds}
+              modality={modality}
             />
-          )}
-
-          {/* X-ray Analysis */}
-          {result.xray_pred && (
-            <ResultCard
-              title="X-ray Analysis"
-              prediction={result.xray_pred}
-              confidence={result.xray_confidence || 0}
-              scores={result.xray_scores || []}
-              image={uploadedImages?.xray}
-              models={result.xray_models}
-            />
-          )}
+          ))}
         </div>
-
-        {/* Confidence Visualization */}
-        {(result.face_models || result.xray_models) && (
-          <ConfidenceVisualization
-            faceModels={result.face_models}
-            xrayModels={result.xray_models}
-            ensembleScore={result.ensemble_score}
-          />
-        )}
 
         {/* AI Performance Metrics */}
         <AIPerformanceMetrics
-          processingTime={result.processing_time}
-          modelCount={(Object.keys(result.face_models || {}).length + Object.keys(result.xray_models || {}).length)}
-          ensembleEnabled={!!(result.face_models || result.xray_models)}
+          processingTime={processingTime ? processingTime / 1000 : undefined}
+          modelCount={results.debug?.models_used?.length || 0}
+          ensembleEnabled={healthDetails?.config?.use_ensemble || false}
         />
 
         {/* Medical Disclaimer */}
