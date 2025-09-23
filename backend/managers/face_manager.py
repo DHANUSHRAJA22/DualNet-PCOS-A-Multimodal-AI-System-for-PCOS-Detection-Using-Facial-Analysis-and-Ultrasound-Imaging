@@ -238,10 +238,39 @@ class FaceManager:
                     include_top=False,
                     input_shape=(224, 224, 3)
                 )
+            elif 'efficientnetb1' in model_name or 'efficientnet_b1' in model_name:
+                base_model = tf.keras.applications.EfficientNetB1(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(240, 240, 3)
+                )
+            elif 'efficientnetb2' in model_name or 'efficientnet_b2' in model_name:
+                base_model = tf.keras.applications.EfficientNetB2(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(260, 260, 3)
+                )
+            elif 'efficientnetb3' in model_name or 'efficientnet_b3' in model_name:
+                base_model = tf.keras.applications.EfficientNetB3(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(300, 300, 3)
+                )
+            elif 'mobilenet' in model_name:
+                base_model = tf.keras.applications.MobileNetV2(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(224, 224, 3)
+                )
+            elif 'densenet' in model_name:
+                base_model = tf.keras.applications.DenseNet121(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(224, 224, 3)
+                )
             else:
-                logger.warning(f"Unknown architecture for {model_name}, cannot reconstruct")
+                logger.warning(f"Unknown architecture for {model_name}, using generic fallback")
                 # Fallback to generic model for unknown architectures
-                logger.info(f"Attempting generic model reconstruction for {model_name}")
                 return self._create_generic_model()
             
             # Add classification head
@@ -260,11 +289,13 @@ class FaceManager:
                 return model
             except Exception as weights_e:
                 logger.error(f"Failed to load weights for reconstructed model {model_path}: {str(weights_e)}")
+                # Try generic fallback as last resort
+                logger.info(f"Attempting generic fallback for {model_name}")
+                return self._create_generic_model()
                 return None
                 
         except Exception as e:
             logger.error(f"Model reconstruction failed for {model_path}: {str(e)}")
-            return None
     
     def _create_generic_model(self):
         """
