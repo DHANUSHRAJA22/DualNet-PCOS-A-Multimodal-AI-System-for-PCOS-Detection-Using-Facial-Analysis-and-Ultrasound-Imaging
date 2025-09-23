@@ -395,6 +395,12 @@ async def structured_predict(
                 modality = ModalityResult(type="xray", label="Analysis failed", scores=[], risk="unknown")
                 modalities.append(modality)
 
+        # Add any loading warnings to response warnings
+        face_warnings = face_manager.get_loading_warnings()
+        xray_warnings = xray_manager.get_loading_warnings()
+        warnings.extend(face_warnings)
+        warnings.extend(xray_warnings)
+
         # Generate final combined result
         if face_score is not None and xray_score is not None:
             combined_score = (face_score + xray_score) / 2
