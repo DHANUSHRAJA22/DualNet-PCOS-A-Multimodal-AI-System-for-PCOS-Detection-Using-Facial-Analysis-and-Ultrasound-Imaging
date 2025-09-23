@@ -132,7 +132,7 @@ pip install -r requirements.txt
 # Models will be automatically discovered
 
 # Start the backend server
-uvicorn app:app --reload --port 8000
+uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### 2. Frontend Setup
@@ -148,10 +148,22 @@ npm run dev
 ### 3. Access the Application
 
 - **Frontend**: http://localhost:5173
-- **Backend API**: http://localhost:8000
+- **Backend API**: http://localhost:8000 (proxied via Vite in dev)
 - **API Documentation**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/health
 
+### 4. Quick Health Check
+
+Verify everything is working:
+
+```bash
+# Test backend health
+curl http://localhost:8000/health
+
+# Should return JSON with status: "healthy" and model availability
+```
+
+If models fail to load due to Keras version mismatches, the system will automatically fall back to weights-only loading and continue operating with available models.
 ## 🔧 Configuration
 
 ### Backend Configuration

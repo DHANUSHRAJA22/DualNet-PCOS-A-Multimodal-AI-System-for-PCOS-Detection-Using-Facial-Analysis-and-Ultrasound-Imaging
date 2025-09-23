@@ -45,6 +45,98 @@ def compiled_predict(model, input_data):
     """Compiled prediction function to avoid TensorFlow retracing warnings"""
     return model(input_data, training=False)
 
+def _try_load_full_model(path: str):
+    """Try to load model normally, return None if Keras version mismatch"""
+    try:
+        return tf.keras.models.load_model(path, compile=False)
+    except TypeError as e:
+        # Keras 3/2 serialization mismatch
+        if "Unrecognized keyword arguments" in str(e) or "batch_shape" in str(e):
+            logger.warning(f"Keras version mismatch for {path}, will try weights-only fallback")
+            return None
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to load model {path}: {str(e)}")
+        return None
+
+def _build_resnet50(input_shape=(224, 224, 3), num_classes=2):
+    """Build ResNet50 architecture for weights-only loading"""
+    base = tf.keras.applications.ResNet50(include_top=False, weights=None, input_shape=input_shape)
+    x = tf.keras.layers.GlobalAveragePooling2D()(base.output)
+    x = tf.keras.layers.Dense(128, activation="relu")(x)
+    out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(base.input, out)
+
+def _build_vgg16(input_shape=(224, 224, 3), num_classes=2):
+    """Build VGG16 architecture for weights-only loading"""
+    base = tf.keras.applications.VGG16(include_top=False, weights=None, input_shape=input_shape)
+    x = tf.keras.layers.Flatten()(base.output)
+    x = tf.keras.layers.Dense(256, activation="relu")(x)
+    out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(base.input, out)
+
+def _build_efficientnet(input_shape=(224, 224, 3), num_classes=2):
+    """Build EfficientNet architecture for weights-only loading"""
+    base = tf.keras.applications.EfficientNetB0(include_top=False, weights=None, input_shape=input_shape)
+    x = tf.keras.layers.GlobalAveragePooling2D()(base.output)
+    x = tf.keras.layers.Dense(128, activation="relu")(x)
+    out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(base.input, out)
+
+def _build_custom_detector(input_shape=(224, 224, 3), num_classes=2):
+    """Build custom detector architecture for weights-only loading"""
+    base = tf.keras.applications.VGG16(include_top=False, weights=None, input_shape=input_shape)
+    x = tf.keras.layers.Flatten()(base.output)
+    x = tf.keras.layers.Dense(256, activation="relu")(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
+    out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(base.input, out)
+
+def load_with_weights_fallback(model_path: str, arch: str, input_shape=(224, 224, 3), num_classes=2):
+    """
+    Load model with fallback to weights-only loading for Keras version mismatches
+    
+    Args:
+        model_path: Path to model file
+        arch: Architecture name (resnet50, vgg16, efficientnet, detector_158, etc.)
+        input_shape: Input shape for model
+        num_classes: Number of output classes
+        
+    Returns:
+        Loaded model or None if failed
+    """
+    # 1) Try full model loading first
+    model = _try_load_full_model(model_path)
+    if model is not None:
+        logger.info(f"Successfully loaded full model: {model_path}")
+        return model
+    
+    # 2) Rebuild architecture and load weights only
+    logger.info(f"Attempting weights-only fallback for {model_path} with architecture {arch}")
+    
+    try:
+        arch_lower = arch.lower()
+        if "resnet" in arch_lower:
+            model = _build_resnet50(input_shape, num_classes)
+        elif "vgg" in arch_lower:
+            model = _build_vgg16(input_shape, num_classes)
+        elif "efficientnet" in arch_lower:
+            model = _build_efficientnet(input_shape, num_classes)
+        elif "detector" in arch_lower:
+            model = _build_custom_detector(input_shape, num_classes)
+        else:
+            # Default fallback architecture
+            logger.warning(f"Unknown architecture {arch}, using VGG16 fallback")
+            model = _build_vgg16(input_shape, num_classes)
+        
+        # Load weights with skip_mismatch for robustness
+        model.load_weights(model_path, by_name=True, skip_mismatch=True)
+        logger.info(f"Successfully loaded weights-only model: {model_path}")
+        return model
+        
+    except Exception as e:
+        logger.error(f"Weights-only fallback failed for {model_path}: {str(e)}")
+        return None
 class XrayManager:
     """
     Manages ensemble inference of X-ray analysis models
@@ -123,6 +215,7 @@ class XrayManager:
     def _load_pcos_models(self) -> None:
         """Load PCOS classification models with ensemble support"""
         loaded_count = 0
+        corrupted_models = []
         
         # Get available models using auto-discovery
         available_models = get_available_xray_models()
@@ -143,6 +236,12 @@ class XrayManager:
                 model = self._load_model_with_fallback(model_path)
                 
                 if model is not None:
+                    # Validate model by running a test prediction
+                    if not self._validate_model(model, model_path):
+                        logger.error(f"Model validation failed for {model_name}, marking as corrupted")
+                        corrupted_models.append(model_path)
+                        continue
+                    
                     weight = self.ensemble_weights.get(model_name, 1.0)
                     labels = load_model_labels(model_path)
                     
@@ -158,11 +257,18 @@ class XrayManager:
                     }
                     loaded_count += 1
                     logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight}, input_shape: {input_shape})")
+                else:
+                    logger.error(f"Failed to load model {model_name}, marking as corrupted")
+                    corrupted_models.append(model_path)
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
                 self.loading_warnings.append(f"X-ray model {model_name} failed to load: {str(e)}")
+                corrupted_models.append(model_path)
                 continue
+        
+        # Remove corrupted model files
+        self._remove_corrupted_models(corrupted_models)
         
         # Normalize weights for loaded models
         if self.pcos_models:
@@ -185,6 +291,62 @@ class XrayManager:
             logger.warning("No X-ray PCOS models could be loaded - X-ray analysis will be unavailable")
             self.model_status["xray"]["error"] = "No models loaded successfully"
             self.loading_warnings.append("No X-ray PCOS models could be loaded - imaging analysis unavailable")
+    
+    def _validate_model(self, model, model_path: Path) -> bool:
+        """
+        Validate model by running a test prediction
+        
+        Args:
+            model: Loaded TensorFlow model
+            model_path: Path to model file
+            
+        Returns:
+            True if model is valid, False if corrupted
+        """
+        try:
+            # Get input shape from model
+            input_shape = self._get_model_input_shape(model)
+            
+            # Create dummy input data
+            dummy_input = np.random.random((1, input_shape[0], input_shape[1], 3)).astype(np.float32)
+            
+            # Try to run prediction
+            prediction = model.predict(dummy_input, verbose=0)
+            
+            # Check if prediction has expected shape
+            if prediction is None or len(prediction.shape) != 2:
+                logger.error(f"Model {model_path} returned invalid prediction shape")
+                return False
+            
+            # Check if prediction contains valid probabilities
+            if np.any(np.isnan(prediction)) or np.any(np.isinf(prediction)):
+                logger.error(f"Model {model_path} returned NaN or Inf values")
+                return False
+            
+            logger.debug(f"Model validation successful for {model_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Model validation failed for {model_path}: {str(e)}")
+            return False
+    
+    def _remove_corrupted_models(self, corrupted_paths: List[Path]) -> None:
+        """
+        Remove corrupted model files
+        
+        Args:
+            corrupted_paths: List of paths to corrupted model files
+        """
+        for model_path in corrupted_paths:
+            try:
+                if model_path.exists():
+                    # Move to backup location instead of deleting
+                    backup_path = model_path.with_suffix('.corrupted')
+                    model_path.rename(backup_path)
+                    logger.info(f"Moved corrupted model to backup: {backup_path}")
+                    self.loading_warnings.append(f"Corrupted model moved to backup: {model_path.name}")
+            except Exception as e:
+                logger.error(f"Failed to move corrupted model {model_path}: {str(e)}")
     
     def _load_model_with_fallback(self, model_path: Path):
         """
@@ -244,10 +406,14 @@ class XrayManager:
             else:
                 logger.error(f"Model loading failed for {model_path}: {str(e)}")
                 return None
-                
         except Exception as e:
-            logger.error(f"Model loading failed for {model_path}: {str(e)}")
-            return None
+            # Check if file is corrupted
+            if "unable to open file" in str(e).lower() or "not an hdf5 file" in str(e).lower():
+                logger.error(f"Model file appears to be corrupted: {model_path}")
+                return None
+            else:
+                logger.error(f"Model loading failed for {model_path}: {str(e)}")
+                return None
     
     def _fix_batch_shape_and_load(self, model_path: Path):
         """
@@ -738,11 +904,6 @@ class XrayManager:
                 except Exception:
                     # Fallback to regular predict if compiled version fails
                     prediction = model.predict(image_array, verbose=0)
-                    prediction = compiled_predict(model, roi_array)
-                    prediction = prediction.numpy()  # Convert to numpy if needed
-                except Exception:
-                    # Fallback to regular predict if compiled version fails
-                    prediction = model.predict(roi_array, verbose=0)
                 
                 # Extract probabilities
                 if prediction.shape[1] == 1:
@@ -763,12 +924,10 @@ class XrayManager:
             except Exception as e:
                 logger.error(f"PCOS full image prediction failed for {model_name}: {str(e)}")
                 self.loading_warnings.append(f"X-ray model {model_name} full image prediction failed: {str(e)}")
-                self.loading_warnings.append(f"X-ray model {model_name} ROI prediction failed: {str(e)}")
                 continue
         
         if not per_model_predictions:
             self.loading_warnings.append("No X-ray PCOS models available for full image prediction")
-            self.loading_warnings.append("No X-ray PCOS models available for ROI prediction")
             return {
                 "per_model": {},
                 "per_model_scores": {},

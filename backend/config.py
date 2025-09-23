@@ -114,10 +114,15 @@ def get_available_face_models() -> Dict[str, Path]:
     """
     available = {}
     
-    # Use glob to find all pcos_*.h5 files in face directory
-    pattern = str(FACE_MODELS_DIR / "pcos_*.h5")
+    # Use glob to find all *.h5 files in face directory (excluding gender_classifier)
+    pattern = str(FACE_MODELS_DIR / "*.h5")
     for model_path in glob.glob(pattern):
         model_path = Path(model_path)
+        
+        # Skip gender classifier
+        if model_path.name == "gender_classifier.h5":
+            continue
+            
         if model_path.exists() and model_path.is_file():
             try:
                 # Validate that the file is readable
@@ -125,13 +130,13 @@ def get_available_face_models() -> Dict[str, Path]:
                     # Read first few bytes to check if it's a valid HDF5 file
                     header = f.read(8)
                     if header.startswith(b'\x89HDF'):
-                        # Extract model name from filename (remove pcos_ prefix and .h5 suffix)
-                        model_name = model_path.stem.replace('pcos_', '')
+                        # Extract model name from filename (remove .h5 suffix)
+                        model_name = model_path.stem
                         available[model_name] = model_path
                     else:
-                        logger.warning(f"Invalid HDF5 file detected: {model_path}")
+                        print(f"Warning: Invalid HDF5 file detected: {model_path}")
             except Exception as e:
-                logger.warning(f"Could not validate model file {model_path}: {str(e)}")
+                print(f"Warning: Could not validate model file {model_path}: {str(e)}")
     
     return available
 
@@ -144,8 +149,8 @@ def get_available_xray_models() -> Dict[str, Path]:
     """
     available = {}
     
-    # Use glob to find all pcos_*.h5 files in xray directory
-    pattern = str(XRAY_MODELS_DIR / "pcos_*.h5")
+    # Use glob to find all *.h5 files in xray directory
+    pattern = str(XRAY_MODELS_DIR / "*.h5")
     for model_path in glob.glob(pattern):
         model_path = Path(model_path)
         if model_path.exists() and model_path.is_file():
@@ -155,13 +160,13 @@ def get_available_xray_models() -> Dict[str, Path]:
                     # Read first few bytes to check if it's a valid HDF5 file
                     header = f.read(8)
                     if header.startswith(b'\x89HDF'):
-                        # Extract model name from filename (remove pcos_ prefix and .h5 suffix)
-                        model_name = model_path.stem.replace('pcos_', '')
+                        # Extract model name from filename (remove .h5 suffix)
+                        model_name = model_path.stem
                         available[model_name] = model_path
                     else:
-                        logger.warning(f"Invalid HDF5 file detected: {model_path}")
+                        print(f"Warning: Invalid HDF5 file detected: {model_path}")
             except Exception as e:
-                logger.warning(f"Could not validate model file {model_path}: {str(e)}")
+                print(f"Warning: Could not validate model file {model_path}: {str(e)}")
     
     return available
 

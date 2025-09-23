@@ -9,7 +9,8 @@ import { ResultCard } from '../components/ResultCard';
 import { RiskGauge } from '../components/RiskGauge';
 import { AIPerformanceMetrics } from '../components/AIPerformanceMetrics';
 import { MedicalDisclaimer } from '../components/MedicalDisclaimer';
-import type { StructuredPredictionResponse, EnhancedHealthResponse, isStructuredResponse } from '../lib/api';
+import type { StructuredPredictionResponse, EnhancedHealthResponse } from '../lib/api';
+import { isStructuredResponse } from '../lib/api';
 
 export function Results() {
   const location = useLocation();
