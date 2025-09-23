@@ -43,6 +43,7 @@ class FaceManager:
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_predict_gender = False
         self.ensemble_weights = {}
+        self.ensemble_manager = EnsembleManager()
         
         # Model status tracking
         self.model_status = {
