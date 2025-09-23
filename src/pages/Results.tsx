@@ -9,16 +9,16 @@ import { ResultCard } from '../components/ResultCard';
 import { RiskGauge } from '../components/RiskGauge';
 import { AIPerformanceMetrics } from '../components/AIPerformanceMetrics';
 import { MedicalDisclaimer } from '../components/MedicalDisclaimer';
-import type { StructuredPredictionResponse, EnhancedHealthResponse } from '../lib/api';
+import type { StructuredPredictionResponse, EnhancedHealthResponse, isStructuredResponse } from '../lib/api';
 
 export function Results() {
   const location = useLocation();
   const navigate = useNavigate();
   
-  const results = location.state?.results as StructuredPredictionResponse;
+  const rawResults = location.state?.results;
   const healthDetails = location.state?.healthDetails as EnhancedHealthResponse;
 
-  if (!results) {
+  if (!rawResults) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
         <Card className="w-full max-w-md">
@@ -49,6 +49,23 @@ export function Results() {
     );
   }
 
+  // Ensure we have structured results
+  const results: StructuredPredictionResponse = isStructuredResponse(rawResults) 
+    ? rawResults 
+    : {
+        ok: rawResults.ok || false,
+        modalities: [],
+        final: {
+          risk: rawResults.overall_risk || 'unknown',
+          confidence: 0.5,
+          explanation: rawResults.combined || 'Analysis completed',
+          fusion_mode: 'legacy'
+        },
+        warnings: [],
+        processing_time_ms: 0,
+        debug: {}
+      };
+
   // Extract risk and confidence from structured response
   const finalRisk = results.final.risk;
   const finalConfidence = results.final.confidence;
@@ -57,8 +74,8 @@ export function Results() {
   
   // Get backend thresholds from health details
   const thresholds = healthDetails?.config ? {
-    low: healthDetails.config.risk_thresholds?.low || 0.33,
-    high: healthDetails.config.risk_thresholds?.high || 0.66
+    low: healthDetails.config.risk_thresholds?.low ?? 0.33,
+    high: healthDetails.config.risk_thresholds?.high ?? 0.66
   } : { low: 0.33, high: 0.66 };
 
   // Find face modality for gender display
@@ -140,7 +157,7 @@ export function Results() {
             <div className="grid md:grid-cols-2 gap-6">
               <RiskGauge 
                 riskLevel={finalRisk as 'low' | 'moderate' | 'high' | 'unknown'}
-                confidence={finalConfidence}
+                confidence={finalConfidence > 1 ? finalConfidence : finalConfidence * 100}
                 thresholds={thresholds}
               />
               <div className="space-y-4">
@@ -205,6 +222,39 @@ export function Results() {
                         X-ray PCOS models unavailable—imaging analysis skipped.
                       </AlertDescription>
                     </Alert>
+                    
+                    {/* Show YOLO detections if available */}
+                    {modality.detections && modality.detections.length > 0 && (
+                      <div>
+                        <h4 className="font-semibold mb-3 text-slate-800">Object Detections</h4>
+                        <div className="space-y-2">
+                          {modality.detections.map((detection, detIndex) => (
+                            <div key={detIndex} className="bg-white/70 p-3 rounded-lg border border-slate-200">
+                              <div className="flex justify-between items-center">
+                                <span className="capitalize font-medium">{detection.label}</span>
+                                <Badge variant="outline">
+                                  {(detection.conf * 100).toFixed(1)}% confidence
+                                </Badge>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Show visualization if available */}
+                    {modality.visualization && (
+                      <div>
+                        <h4 className="font-semibold mb-3 text-slate-800">YOLO Detection Visualization</h4>
+                        <img
+                          src={modality.visualization}
+                          alt="YOLO Detection"
+                          className="w-full max-h-64 object-contain rounded-lg border-2 border-slate-200 bg-white shadow-lg"
+                          loading="lazy"
+                        />
+                      </div>
+                    )}
+                    
                     {modality.original_img && (
                       <div>
                         <h4 className="font-semibold mb-3 text-slate-800">Uploaded Image</h4>
@@ -227,7 +277,7 @@ export function Results() {
                   visualizationImage={modality.visualization}
                   foundLabels={modality.found_labels}
                   riskLevel={modality.risk as 'low' | 'moderate' | 'high' | 'unknown'}
-                  confidence={finalConfidence}
+                  confidence={finalConfidence > 1 ? finalConfidence : finalConfidence * 100}
                   thresholds={thresholds}
                   modality={modality}
                 />
