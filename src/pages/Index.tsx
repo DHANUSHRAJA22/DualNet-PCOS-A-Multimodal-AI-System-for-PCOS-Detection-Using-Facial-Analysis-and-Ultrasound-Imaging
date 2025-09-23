@@ -25,7 +25,7 @@ import { MedicalDisclaimer } from '@/components/MedicalDisclaimer'
 import { LoadingSpinner } from '@/components/LoadingSpinner'
 import { BackendStatus } from '@/components/BackendStatus'
 import { SampleImages } from '@/components/SampleImages'
-import { resolveApiBase, pingHealth, postPredict, convertToLegacyFormat, isStructuredResponse, type HealthStatus } from '@/lib/api'
+import { resolveApiBase, pingHealth, postPredict, getEnhancedHealth, type HealthStatus } from '@/lib/api'
 import { toast } from 'sonner'
 import type { ProcessedImage } from '@/lib/image'
 
@@ -95,22 +95,19 @@ export function IndexPage() {
   const handleSampleSelect = (type: 'face' | 'xray', processedImage: ProcessedImage) => {
     if (type === 'face') {
       setFaceImage(processedImage)
-      toast.success('Face sample image loaded successfully')
     } else {
       setXrayImage(processedImage)
-      toast.success('X-ray sample image loaded successfully')
     }
   }
 
   const handleFaceSampleSelect = (processedImage: ProcessedImage) => {
     setFaceImage(processedImage)
-    toast.success('Face sample image loaded successfully')
   }
 
   const handleXraySampleSelect = (processedImage: ProcessedImage) => {
     setXrayImage(processedImage)
-    toast.success('X-ray sample image loaded successfully')
   }
+  
   const handleAnalyze = async () => {
     if (!hasImages) {
       toast.error('Please select at least one image to analyze')
@@ -127,6 +124,7 @@ export function IndexPage() {
       toast.error(`X-ray image is too large (${(xrayImage.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 5MB.`)
       return
     }
+    
     // Pre-check backend health
     const currentStatus = await pingHealth()
     setBackendStatus(currentStatus)

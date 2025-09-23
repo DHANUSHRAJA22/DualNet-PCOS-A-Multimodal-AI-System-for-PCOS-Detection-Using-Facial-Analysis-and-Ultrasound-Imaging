@@ -13,6 +13,11 @@ interface MetricProps {
   delay: number
 }
 
+interface AIPerformanceMetricsProps {
+  processingTime?: number
+  modelCount?: number
+  ensembleEnabled?: boolean
+}
 function MetricCard({ label, value, color, icon: Icon, description, delay }: MetricProps) {
   return (
     <motion.div
@@ -64,7 +69,7 @@ function MetricCard({ label, value, color, icon: Icon, description, delay }: Met
   )
 }
 
-export function AIPerformanceMetrics() {
+export function AIPerformanceMetrics({ processingTime, modelCount, ensembleEnabled }: AIPerformanceMetricsProps) {
   const metrics = [
     {
       label: 'Accuracy',
@@ -117,6 +122,13 @@ export function AIPerformanceMetrics() {
               Our AI models are trained on extensive medical datasets and validated against clinical standards. 
               These metrics demonstrate the system's reliability for PCOS screening applications.
             </p>
+            {(processingTime || modelCount || ensembleEnabled !== undefined) && (
+              <div className="mt-3 pt-3 border-t border-blue-200 text-xs text-slate-600 space-y-1">
+                {processingTime && <div>Processing Time: {processingTime.toFixed(2)}s</div>}
+                {modelCount && <div>Models Used: {modelCount}</div>}
+                {ensembleEnabled !== undefined && <div>Ensemble: {ensembleEnabled ? 'Enabled' : 'Disabled'}</div>}
+              </div>
+            )}
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

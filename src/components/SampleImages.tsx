@@ -57,8 +57,9 @@ export function SampleImages({ onSelectFaceSample, onSelectXraySample }: SampleI
     setIsLoading(sample.id)
     
     try {
-      // Fetch the image
-      const response = await fetch(sample.url)
+      // Use image proxy to avoid CORS issues
+      const proxyUrl = `/img-proxy?url=${encodeURIComponent(sample.url)}`
+      const response = await fetch(proxyUrl)
       if (!response.ok) {
         throw new Error('Failed to fetch sample image')
       }

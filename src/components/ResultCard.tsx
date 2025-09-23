@@ -120,12 +120,12 @@ export function ResultCard({
           />
 
           {/* Per-Model Scores Display */}
-          {(modality?.per_model || modality?.face_models || modality?.xray_models) && (
+          {(modality?.per_model && Object.keys(modality.per_model).length > 0) && (
             <div>
               <h4 className="font-semibold mb-3 text-slate-800">Individual Model Scores</h4>
               <div className="bg-white/70 rounded-lg p-4 border border-slate-200">
                 <div className="space-y-3">
-                  {Object.entries(modality.per_model || modality.face_models || modality.xray_models || {}).map(([modelName, score]) => {
+                  {Object.entries(modality.per_model).map(([modelName, score]) => {
                     // Handle both score formats (single number or array)
                     const displayScore = Array.isArray(score) ? score[1] : score; // Use PCOS probability
                     return (

@@ -334,6 +334,10 @@ async def structured_predict(
                 if gender_info.get("label") == "male":
                     warnings.append("Male face detected - PCOS analysis may not be applicable")
 
+                # Add any loading warnings from face manager
+                face_warnings = face_manager.get_loading_warnings()
+                warnings.extend(face_warnings)
+
             except Exception as e:
                 logger.error(f"Face processing failed: {str(e)}")
                 logger.debug(traceback.format_exc())
@@ -379,6 +383,10 @@ async def structured_predict(
                                 "confidence": getattr(roi, "confidence", 0.0),
                             }
                         )
+
+                # Add any loading warnings from xray manager
+                xray_warnings = xray_manager.get_loading_warnings()
+                warnings.extend(xray_warnings)
 
             except Exception as e:
                 logger.error(f"X-ray processing failed: {str(e)}")
