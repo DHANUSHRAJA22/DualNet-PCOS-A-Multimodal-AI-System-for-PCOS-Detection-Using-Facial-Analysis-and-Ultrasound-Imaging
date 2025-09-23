@@ -10,7 +10,8 @@ import { fixImageOrientation } from '@/lib/image'
 import type { ProcessedImage } from '@/lib/image'
 
 interface SampleImagesProps {
-  onSelectSample: (type: 'face' | 'xray', processedImage: ProcessedImage) => void
+  onSelectFaceSample: (processedImage: ProcessedImage) => void
+  onSelectXraySample: (processedImage: ProcessedImage) => void
 }
 
 const sampleImages = {
@@ -48,7 +49,7 @@ const sampleImages = {
   ]
 }
 
-export function SampleImages({ onSelectSample }: SampleImagesProps) {
+export function SampleImages({ onSelectFaceSample, onSelectXraySample }: SampleImagesProps) {
   const [selectedPreview, setSelectedPreview] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState<string | null>(null)
 
@@ -73,7 +74,11 @@ export function SampleImages({ onSelectSample }: SampleImagesProps) {
       // Process the image properly using the same function as upload
       const processedImage = await fixImageOrientation(file)
 
-      onSelectSample(type, processedImage)
+      if (type === 'face') {
+        onSelectFaceSample(processedImage)
+      } else {
+        onSelectXraySample(processedImage)
+      }
       toast.success(`Sample ${type} image loaded successfully`)
     } catch (error) {
       toast.error(`Failed to load sample image: ${error instanceof Error ? error.message : 'Unknown error'}`)

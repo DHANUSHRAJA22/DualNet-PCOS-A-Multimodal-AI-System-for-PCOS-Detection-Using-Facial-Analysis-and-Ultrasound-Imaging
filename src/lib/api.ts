@@ -114,7 +114,7 @@ export function resolveApiBase(): string {
     return envBase.replace(/\/+$/, '')
   }
   
-  // 3. Fall back to relative path (Vite proxy)
+  // 3. Fall back to relative path (Vite proxy to port 8000)
   return ''
 }
 

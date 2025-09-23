@@ -17,7 +17,7 @@ from PIL import Image
 import numpy as np
 import io
 
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = "http://127.0.0.1:8000"
 
 def create_test_image(size=(224, 224), color_mode='RGB'):
     """Create a test image for API testing"""

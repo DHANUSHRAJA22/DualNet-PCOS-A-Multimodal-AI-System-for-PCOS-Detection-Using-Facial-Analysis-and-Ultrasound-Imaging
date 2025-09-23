@@ -87,6 +87,15 @@ export function IndexPage() {
     }
   }
 
+  const handleFaceSampleSelect = (processedImage: ProcessedImage) => {
+    setFaceImage(processedImage)
+    toast.success('Face sample image loaded successfully')
+  }
+
+  const handleXraySampleSelect = (processedImage: ProcessedImage) => {
+    setXrayImage(processedImage)
+    toast.success('X-ray sample image loaded successfully')
+  }
   const handleAnalyze = async () => {
     if (!hasImages) {
       toast.error('Please select at least one image to analyze')
@@ -285,7 +294,10 @@ export function IndexPage() {
 
                 <MedicalDisclaimer />
                 
-                <SampleImages onSelectSample={handleSampleSelect} />
+                <SampleImages 
+                  onSelectFaceSample={handleFaceSampleSelect}
+                  onSelectXraySample={handleXraySampleSelect}
+                />
               </CardContent>
             </Card>
           </Reveal>

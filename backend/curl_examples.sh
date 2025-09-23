@@ -5,7 +5,7 @@
 
 set -e
 
-BASE_URL="http://127.0.0.1:5000"
+BASE_URL="http://127.0.0.1:8000"
 TEST_DIR="test_images"
 
 echo "🧪 PCOS Analyzer API - cURL Examples"
@@ -15,7 +15,7 @@ echo "===================================="
 echo "📡 Checking server health..."
 if ! curl -s "$BASE_URL/health" > /dev/null; then
     echo "❌ Server not running at $BASE_URL"
-    echo "Start the server with: uvicorn app:app --reload --port 5000"
+    echo "Start the server with: uvicorn app:app --reload --port 8000"
     exit 1
 fi
 

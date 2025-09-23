@@ -143,19 +143,22 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
             <DialogTitle className="text-gradient bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">
               Configure Backend API
             </DialogTitle>
+              <div className="text-xs text-muted-foreground">
+                Default: http://localhost:8000 (FastAPI backend)
+              </div>
           </DialogHeader>
           <div className="space-y-4">
             <div>
               <Label htmlFor="api-url">Backend API URL</Label>
               <Input
-                id="api-url"
-                value={apiUrl}
+                <li>Start your FastAPI backend locally on port 8000</li>
+                <li>Expose it publicly with ngrok: <code className="bg-muted px-1 rounded">ngrok http 8000</code></li>
                 onChange={(e) => setApiUrl(e.target.value)}
                 placeholder="https://your-backend.com"
                 className="mt-1"
               />
               <p className="text-xs text-muted-foreground mt-1">
-                Leave empty to use local proxy (dev only)
+                <strong>Quick test:</strong> Open <code className="bg-muted px-1 rounded">{resolveApiBase() || 'http://localhost:8000'}/health</code> in your browser - it should return JSON with model status.
               </p>
             </div>
             <div className="flex gap-2">
