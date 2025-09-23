@@ -60,6 +60,11 @@ class Settings:
     RISK_LOW_THRESHOLD: float = 0.33
     RISK_HIGH_THRESHOLD: float = 0.66
     
+    # Image sizes
+    FACE_IMAGE_SIZE: tuple = (224, 224)
+    GENDER_IMAGE_SIZE: tuple = (249, 249)  # Gender model expects 249x249
+    XRAY_IMAGE_SIZE: tuple = (224, 224)
+    
     # Image proxy whitelist
     ALLOWED_PROXY_HOSTS: List[str] = [
         "images.pexels.com",
@@ -111,6 +116,18 @@ def get_available_xray_models() -> Dict[str, Path]:
     
     return available
 
+def get_model_labels(model_type: str) -> List[str]:
+    """
+    Get default class labels for model type
+    
+    Args:
+        model_type: Type of model ('face' or 'xray')
+        
+    Returns:
+        List of class labels
+    """
+    return ["non_pcos", "pcos"]
+
 def load_model_labels(model_path: Path) -> List[str]:
     """
     Load class labels for a model from corresponding .labels.txt file
@@ -157,10 +174,10 @@ def get_ensemble_weights(model_type: str) -> Dict[str, float]:
     """
     if model_type == 'face':
         available_models = get_available_face_models()
-        prefix = "FACE_ENSEMBLE_WEIGHT_"
+        prefix = "ENSEMBLE_WEIGHT_"
     elif model_type == 'xray':
         available_models = get_available_xray_models()
-        prefix = "XRAY_ENSEMBLE_WEIGHT_"
+        prefix = "ENSEMBLE_WEIGHT_"
     else:
         return {}
     
@@ -178,20 +195,27 @@ def get_ensemble_weights(model_type: str) -> Dict[str, float]:
     
     return weights
 
-def normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
+def normalize_weights(weights: Dict[str, float], available_models: List[str] = None) -> Dict[str, float]:
     """
     Normalize weights to sum to 1.0
     
     Args:
         weights: Original weights dictionary
+        available_models: List of available model names to filter weights
         
     Returns:
         Normalized weights dictionary
     """
-    total_weight = sum(weights.values())
+    if available_models:
+        # Filter weights to only include available models
+        filtered_weights = {name: weights.get(name, 1.0) for name in available_models}
+    else:
+        filtered_weights = weights.copy()
+    
+    total_weight = sum(filtered_weights.values())
     if total_weight > 0:
-        return {name: weight / total_weight for name, weight in weights.items()}
+        return {name: weight / total_weight for name, weight in filtered_weights.items()}
     else:
         # Equal weights if no weights specified
-        equal_weight = 1.0 / len(weights) if weights else 0.0
-        return {name: equal_weight for name in weights.keys()}
+        equal_weight = 1.0 / len(filtered_weights) if filtered_weights else 0.0
+        return {name: equal_weight for name in filtered_weights.keys()}

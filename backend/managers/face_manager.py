@@ -122,15 +122,18 @@ class FaceManager:
                     weight = self.ensemble_weights.get(model_name, 1.0)
                     labels = load_model_labels(model_path)
                     
+                    # Detect input shape from model
+                    input_shape = self._get_model_input_shape(model)
+                    
                     self.pcos_models[model_name] = {
                         "model": model,
                         "path": str(model_path),
                         "weight": weight,
                         "labels": labels,
-                        "input_shape": model.input_shape[1:] if model.input_shape else (224, 224, 3)
+                        "input_shape": input_shape
                     }
                     loaded_count += 1
-                    logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight})")
+                    logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight}, input_shape: {input_shape})")
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
@@ -140,7 +143,7 @@ class FaceManager:
         if self.pcos_models:
             model_names = list(self.pcos_models.keys())
             current_weights = {name: self.pcos_models[name]["weight"] for name in model_names}
-            normalized_weights = normalize_weights(current_weights)
+            normalized_weights = normalize_weights(current_weights, model_names)
             
             for model_name, weight in normalized_weights.items():
                 if model_name in self.pcos_models:
@@ -191,13 +194,35 @@ class FaceManager:
             logger.error(f"Model loading failed for {model_path}: {str(e)}")
             return None
     
+    def _get_model_input_shape(self, model) -> Tuple[int, int]:
+        """
+        Get input shape from loaded model
+        
+        Args:
+            model: Loaded TensorFlow model
+            
+        Returns:
+            Tuple of (height, width) for image preprocessing
+        """
+        try:
+            if hasattr(model, 'input_shape') and model.input_shape:
+                # Get (height, width) from model input shape
+                shape = model.input_shape
+                if len(shape) >= 3:
+                    return (shape[1], shape[2])  # (height, width)
+        except Exception:
+            pass
+        
+        # Default to standard size
+        return settings.FACE_IMAGE_SIZE
+    
     def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
         """
         Preprocess image for model inference
         
         Args:
             image_bytes: Raw image bytes
-            target_size: Target size (width, height)
+            target_size: Target size (height, width)
             
         Returns:
             Preprocessed image array ready for model input
@@ -210,8 +235,9 @@ class FaceManager:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Resize with high-quality resampling
-            image = image.resize(target_size, Image.Resampling.LANCZOS)
+            # Resize with high-quality resampling (PIL expects width, height)
+            pil_size = (target_size[1], target_size[0])  # Convert to (width, height)
+            image = image.resize(pil_size, Image.Resampling.LANCZOS)
             
             # Convert to numpy array and normalize to [0,1]
             img_array = np.array(image, dtype=np.float32) / 255.0
@@ -243,16 +269,8 @@ class FaceManager:
             }
         
         try:
-            # Use appropriate input size for gender model (249x249 if that's what it expects)
-            # Check model input shape
-            if hasattr(self.gender_model, 'input_shape') and self.gender_model.input_shape:
-                input_shape = self.gender_model.input_shape[1:3]  # Get (height, width)
-                target_size = (input_shape[1], input_shape[0])  # PIL expects (width, height)
-            else:
-                target_size = (249, 249)  # Default for gender model
-            
-            # Preprocess image for gender model
-            image_array = self._preprocess_image(image_bytes, target_size)
+            # Use gender model specific input size (249x249)
+            image_array = self._preprocess_image(image_bytes, settings.GENDER_IMAGE_SIZE)
             
             # Run prediction
             prediction = self.gender_model.predict(image_array, verbose=0)
@@ -307,13 +325,12 @@ class FaceManager:
         for model_name, model_data in self.pcos_models.items():
             try:
                 model = model_data["model"]
-                input_shape = model_data.get("input_shape", (224, 224, 3))
-                target_size = (input_shape[1], input_shape[0])  # PIL expects (width, height)
+                input_shape = model_data.get("input_shape", settings.FACE_IMAGE_SIZE)
                 
                 # Preprocess image with correct size for this model
-                image_array = self._preprocess_image(image_bytes, target_size)
+                image_array = self._preprocess_image(image_bytes, input_shape)
                 
-                # Run prediction
+                # Run prediction with error handling
                 prediction = model.predict(image_array, verbose=0)
                 
                 # Extract PCOS probability (assuming binary classification)
@@ -342,12 +359,31 @@ class FaceManager:
             }
         
         # Compute ensemble prediction using EnsembleManager
-        ensemble_result = self.ensemble_manager.combine_face_models(per_model_scores, self.pcos_models)
+        ensemble_result = self.ensemble_manager.combine_modalities(
+            face_score=None,  # Will be computed from per_model_scores
+            xray_score=None
+        )
+        
+        # Calculate weighted ensemble score
+        total_weight = 0.0
+        weighted_sum = 0.0
+        
+        for model_name, score in per_model_scores.items():
+            weight = self.pcos_models[model_name]["weight"]
+            weighted_sum += score * weight
+            total_weight += weight
+        
+        ensemble_score = weighted_sum / total_weight if total_weight > 0 else 0.0
         
         return {
             "per_model": per_model_scores,
-            "ensemble_score": ensemble_result["score"],
-            "ensemble": ensemble_result,
+            "ensemble_score": float(ensemble_score),
+            "ensemble": {
+                "method": "weighted_average",
+                "score": float(ensemble_score),
+                "models_used": successful_predictions,
+                "weights_used": {name: self.pcos_models[name]["weight"] for name in per_model_scores.keys()}
+            },
             "labels": ["non_pcos", "pcos"]
         }
     

@@ -304,8 +304,9 @@ async def structured_predict(
                 
                 # Update debug info
                 debug_info["models_used"].extend(face_result.get("models_used", []))
-                if face_result.get("ensemble") and hasattr(face_result["ensemble"], "weights_used"):
-                    debug_info["weights"]["face"] = face_result["ensemble"].weights_used
+            
+            if face_result.get("ensemble") and hasattr(face_result["ensemble"], "weights_used"):
+                debug_info["weights"]["face"] = face_result["ensemble"].weights_used
                 
                 # Check for male face warning
                 if face_result.get("gender", {}).get("label") == "male":
