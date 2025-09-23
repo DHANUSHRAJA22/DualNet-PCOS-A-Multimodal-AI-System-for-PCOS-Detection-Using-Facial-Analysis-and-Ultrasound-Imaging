@@ -9,6 +9,35 @@ import os
 import glob
 from pathlib import Path
 from typing import Dict, List, Optional
+# config.py
+import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+UPLOADS_DIR = BASE_DIR / "uploads"
+
+STATIC_DIR.mkdir(exist_ok=True)
+UPLOADS_DIR.mkdir(exist_ok=True)
+
+XRAY_IMAGE_SIZE = (224, 224)  # or (100, 100) depending on your model
+FACE_IMAGE_SIZE = (100, 100)
+
+MAX_UPLOAD_MB = 10
+STATIC_TTL_SECONDS = 3600
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+HOST = "0.0.0.0"
+PORT = 8000
+DEBUG = True
+
+ALLOWED_ORIGINS = ["*"]
+
+RISK_LOW_THRESHOLD = 0.3
+RISK_HIGH_THRESHOLD = 0.7
+
+FUSION_MODE = "average"
+USE_ENSEMBLE = True
 
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent
