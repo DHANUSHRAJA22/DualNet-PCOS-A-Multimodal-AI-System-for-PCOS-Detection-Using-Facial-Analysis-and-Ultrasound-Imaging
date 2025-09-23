@@ -50,22 +50,69 @@ export function Results() {
     );
   }
 
-  // Ensure we have structured results
-  const results: StructuredPredictionResponse = isStructuredResponse(rawResults) 
-    ? rawResults 
-    : {
-        ok: rawResults.ok || false,
+  // Ensure we have structured results with proper error handling
+  let results: StructuredPredictionResponse;
+  
+  try {
+    if (isStructuredResponse(rawResults)) {
+      results = rawResults;
+    } else {
+      // Convert legacy format to structured format
+      results = {
+        ok: rawResults?.ok || false,
         modalities: [],
         final: {
-          risk: rawResults.overall_risk || 'unknown',
+          risk: rawResults?.overall_risk || 'unknown',
           confidence: 0.5,
-          explanation: rawResults.combined || 'Analysis completed',
+          explanation: rawResults?.combined || 'Analysis completed',
           fusion_mode: 'legacy'
         },
         warnings: [],
         processing_time_ms: 0,
         debug: {}
       };
+      
+      // Add face modality if present
+      if (rawResults?.face_pred) {
+        results.modalities.push({
+          type: 'face',
+          label: rawResults.face_pred,
+          scores: rawResults.face_scores || [],
+          risk: rawResults.face_risk || 'unknown',
+          original_img: rawResults.face_img
+        });
+      }
+      
+      // Add xray modality if present
+      if (rawResults?.xray_pred) {
+        results.modalities.push({
+          type: 'xray',
+          label: rawResults.xray_pred,
+          scores: [],
+          risk: rawResults.xray_risk || 'unknown',
+          original_img: rawResults.xray_img,
+          visualization: rawResults.yolo_vis,
+          found_labels: rawResults.found_labels
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Error processing results:', error);
+    // Fallback to minimal results structure
+    results = {
+      ok: false,
+      modalities: [],
+      final: {
+        risk: 'unknown',
+        confidence: 0,
+        explanation: 'Error processing results',
+        fusion_mode: 'error'
+      },
+      warnings: ['Error processing analysis results'],
+      processing_time_ms: 0,
+      debug: {}
+    };
+  }
 
   // Extract risk and confidence from structured response
   const finalRisk = results.final.risk;

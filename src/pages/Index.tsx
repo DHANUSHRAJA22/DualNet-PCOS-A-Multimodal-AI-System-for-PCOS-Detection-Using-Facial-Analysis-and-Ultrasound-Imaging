@@ -164,7 +164,8 @@ export function IndexPage() {
           toast.error(`Analysis failed: ${message}`)
         }
       } else if (message.includes('ECONNREFUSED') || message.includes('fetch') || message.includes('NetworkError')) {
-        showDiagnosticsDialog()
+        toast.error('Backend connection failed. Please check if the backend server is running on port 8000.')
+        setShowDiagnostics(true)
       } else {
         toast.error(`Analysis failed: ${message}`)
       }
