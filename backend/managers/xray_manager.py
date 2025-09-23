@@ -2,7 +2,7 @@
 X-ray analysis manager for YOLO detection and PCOS classification
 
 Handles automatic discovery and loading of all X-ray analysis models with
-YOLO object detection and dynamic ensemble inference.
+robust fallback for Keras version incompatibilities and graceful degradation.
 """
 
 import os
@@ -10,39 +10,26 @@ import uuid
 import logging
 import json
 import h5py
-from typing import Dict, Optional, Any, List, Tuple
+from typing import Dict, Optional, Any, Tuple, List
 from pathlib import Path
 import numpy as np
 from PIL import Image
 import io
 from fastapi import UploadFile
-
-# Import TensorFlow and suppress warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import tensorflow as tf
-
-# Import YOLO
-try:
-    from ultralytics import YOLO
-    YOLO_AVAILABLE = True
-except ImportError:
-    YOLO_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("Ultralytics YOLO not available")
 
 from config import (
     settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR, get_risk_level,
-    get_available_xray_models, load_model_labels, get_ensemble_weights, normalize_weights,
-    XRAY_IMAGE_SIZE
+    get_available_xray_models, load_model_labels, get_ensemble_weights, normalize_weights
 )
 from utils.validators import validate_image, get_safe_filename
 
 logger = logging.getLogger(__name__)
 
-# Create a compiled prediction function to avoid retracing warnings
-@tf.function
-def compiled_predict(model, input_data):
-    """Compiled prediction function to avoid TensorFlow retracing warnings"""
+# Compiled prediction function to avoid retracing
+@tf.function(reduce_retracing=True)
+def compiled_predict_xray(model, input_data):
+    """Compiled prediction function for X-ray models to avoid TensorFlow retracing warnings"""
     return model(input_data, training=False)
 
 def _try_load_full_model(path: str):
@@ -59,32 +46,37 @@ def _try_load_full_model(path: str):
         logger.warning(f"Failed to load model {path}: {str(e)}")
         return None
 
-def _build_resnet50(input_shape=(224, 224, 3), num_classes=2):
-    """Build ResNet50 architecture for weights-only loading"""
+def _build_resnet50_xray(input_shape=(100, 100, 3), num_classes=2):
+    """Build ResNet50 architecture for X-ray analysis"""
     base = tf.keras.applications.ResNet50(include_top=False, weights=None, input_shape=input_shape)
     x = tf.keras.layers.GlobalAveragePooling2D()(base.output)
     x = tf.keras.layers.Dense(128, activation="relu")(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
     out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
     return tf.keras.Model(base.input, out)
 
-def _build_vgg16(input_shape=(224, 224, 3), num_classes=2):
-    """Build VGG16 architecture for weights-only loading"""
+def _build_vgg16_xray(input_shape=(100, 100, 3), num_classes=2):
+    """Build VGG16 architecture for X-ray analysis"""
     base = tf.keras.applications.VGG16(include_top=False, weights=None, input_shape=input_shape)
     x = tf.keras.layers.Flatten()(base.output)
+    x = tf.keras.layers.Dense(512, activation="relu")(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
     x = tf.keras.layers.Dense(256, activation="relu")(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
     out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
     return tf.keras.Model(base.input, out)
 
-def _build_efficientnet(input_shape=(224, 224, 3), num_classes=2):
-    """Build EfficientNet architecture for weights-only loading"""
+def _build_efficientnet_xray(input_shape=(100, 100, 3), num_classes=2):
+    """Build EfficientNet architecture for X-ray analysis"""
     base = tf.keras.applications.EfficientNetB0(include_top=False, weights=None, input_shape=input_shape)
     x = tf.keras.layers.GlobalAveragePooling2D()(base.output)
     x = tf.keras.layers.Dense(128, activation="relu")(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
     out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
     return tf.keras.Model(base.input, out)
 
-def _build_custom_detector(input_shape=(224, 224, 3), num_classes=2):
-    """Build custom detector architecture for weights-only loading"""
+def _build_detector_158(input_shape=(100, 100, 3), num_classes=2):
+    """Build custom detector architecture for X-ray analysis"""
     base = tf.keras.applications.VGG16(include_top=False, weights=None, input_shape=input_shape)
     x = tf.keras.layers.Flatten()(base.output)
     x = tf.keras.layers.Dense(256, activation="relu")(x)
@@ -92,13 +84,13 @@ def _build_custom_detector(input_shape=(224, 224, 3), num_classes=2):
     out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
     return tf.keras.Model(base.input, out)
 
-def load_with_weights_fallback(model_path: str, arch: str, input_shape=(224, 224, 3), num_classes=2):
+def load_with_weights_fallback(model_path: str, arch: str, input_shape=(100, 100, 3), num_classes=2):
     """
-    Load model with fallback to weights-only loading for Keras version mismatches
+    Load X-ray model with fallback to weights-only loading for Keras version mismatches
     
     Args:
         model_path: Path to model file
-        arch: Architecture name (resnet50, vgg16, efficientnet, detector_158, etc.)
+        arch: Architecture name (resnet50, vgg16, efficientnet, detector_158)
         input_shape: Input shape for model
         num_classes: Number of output classes
         
@@ -108,41 +100,42 @@ def load_with_weights_fallback(model_path: str, arch: str, input_shape=(224, 224
     # 1) Try full model loading first
     model = _try_load_full_model(model_path)
     if model is not None:
-        logger.info(f"Successfully loaded full model: {model_path}")
+        logger.info(f"Successfully loaded full X-ray model: {model_path}")
         return model
     
     # 2) Rebuild architecture and load weights only
-    logger.info(f"Attempting weights-only fallback for {model_path} with architecture {arch}")
+    logger.info(f"Attempting weights-only fallback for X-ray model {model_path} with architecture {arch}")
     
     try:
         arch_lower = arch.lower()
         if "resnet" in arch_lower:
-            model = _build_resnet50(input_shape, num_classes)
+            model = _build_resnet50_xray(input_shape, num_classes)
         elif "vgg" in arch_lower:
-            model = _build_vgg16(input_shape, num_classes)
+            model = _build_vgg16_xray(input_shape, num_classes)
         elif "efficientnet" in arch_lower:
-            model = _build_efficientnet(input_shape, num_classes)
+            model = _build_efficientnet_xray(input_shape, num_classes)
         elif "detector" in arch_lower:
-            model = _build_custom_detector(input_shape, num_classes)
+            model = _build_detector_158(input_shape, num_classes)
         else:
             # Default fallback architecture
-            logger.warning(f"Unknown architecture {arch}, using VGG16 fallback")
-            model = _build_vgg16(input_shape, num_classes)
+            logger.warning(f"Unknown X-ray architecture {arch}, using VGG16 fallback")
+            model = _build_vgg16_xray(input_shape, num_classes)
         
         # Load weights with skip_mismatch for robustness
         model.load_weights(model_path, by_name=True, skip_mismatch=True)
-        logger.info(f"Successfully loaded weights-only model: {model_path}")
+        logger.info(f"Successfully loaded weights-only X-ray model: {model_path}")
         return model
         
     except Exception as e:
-        logger.error(f"Weights-only fallback failed for {model_path}: {str(e)}")
+        logger.error(f"Weights-only fallback failed for X-ray model {model_path}: {str(e)}")
         return None
+
 class XrayManager:
     """
     Manages ensemble inference of X-ray analysis models
     
-    Loads multiple X-ray models and YOLO for detection, performs ensemble inference
-    with configurable weights and ROI processing.
+    Loads YOLO detection model and multiple X-ray classification models,
+    performs ensemble inference with graceful degradation when models fail.
     """
     
     def __init__(self):
@@ -158,15 +151,11 @@ class XrayManager:
             "xray": {"loaded": False, "available": False, "error": None}
         }
         
-        # Track loading warnings
         self.loading_warnings = []
-        
         self._load_models()
     
     def can_lazy_load_yolo(self) -> bool:
         """Check if YOLO model can be lazy loaded"""
-        if not YOLO_AVAILABLE:
-            return False
         yolo_path = YOLO_MODELS_DIR / settings.YOLO_MODEL
         return yolo_path.exists() and yolo_path.is_file()
     
@@ -190,16 +179,13 @@ class XrayManager:
     
     def _load_yolo_model(self) -> None:
         """Load YOLO object detection model"""
-        if not YOLO_AVAILABLE:
-            self.model_status["yolo"]["error"] = "Ultralytics not available"
-            return
-            
         yolo_path = YOLO_MODELS_DIR / settings.YOLO_MODEL
         
         self.model_status["yolo"]["available"] = yolo_path.exists()
         
         try:
             if yolo_path.exists():
+                from ultralytics import YOLO
                 self.yolo_model = YOLO(str(yolo_path))
                 self.can_detect_objects = True
                 self.model_status["yolo"]["loaded"] = True
@@ -207,15 +193,16 @@ class XrayManager:
             else:
                 logger.warning(f"YOLO model not found: {yolo_path}")
                 self.model_status["yolo"]["error"] = "File not found"
+                self.loading_warnings.append(f"YOLO model not found: {yolo_path}")
                 
         except Exception as e:
             logger.error(f"Failed to load YOLO model: {str(e)}")
             self.model_status["yolo"]["error"] = str(e)
+            self.loading_warnings.append(f"YOLO model failed to load: {str(e)}")
     
     def _load_pcos_models(self) -> None:
         """Load PCOS classification models with ensemble support"""
         loaded_count = 0
-        corrupted_models = []
         
         # Get available models using auto-discovery
         available_models = get_available_xray_models()
@@ -224,51 +211,48 @@ class XrayManager:
         if not available_models:
             logger.warning("No X-ray PCOS models found")
             self.model_status["xray"]["available"] = False
+            self.loading_warnings.append("No X-ray PCOS models found")
             return
         
         # Get ensemble weights
         self.ensemble_weights = get_ensemble_weights('xray')
         
-        # Load each available model
+        # Load each available model with robust fallback
         for model_name, model_path in available_models.items():
             try:
+                # Detect architecture from model name
+                arch = self._detect_architecture(model_name)
+                
                 # Try loading with fallback for batch_shape issues
-                model = self._load_model_with_fallback(model_path)
+                model = load_with_weights_fallback(str(model_path), arch, settings.XRAY_IMAGE_SIZE, 2)
                 
                 if model is not None:
                     # Validate model by running a test prediction
                     if not self._validate_model(model, model_path):
-                        logger.error(f"Model validation failed for {model_name}, marking as corrupted")
-                        corrupted_models.append(model_path)
+                        logger.error(f"Model validation failed for {model_name}")
+                        self.loading_warnings.append(f"X-ray model {model_name} validation failed")
                         continue
                     
                     weight = self.ensemble_weights.get(model_name, 1.0)
                     labels = load_model_labels(model_path)
-                    
-                    # Detect input shape from model
-                    input_shape = self._get_model_input_shape(model)
                     
                     self.pcos_models[model_name] = {
                         "model": model,
                         "path": str(model_path),
                         "weight": weight,
                         "labels": labels,
-                        "input_shape": input_shape
+                        "input_shape": settings.XRAY_IMAGE_SIZE
                     }
                     loaded_count += 1
-                    logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight}, input_shape: {input_shape})")
+                    logger.info(f"Loaded X-ray PCOS model {model_name}: {model_path} (weight: {weight})")
                 else:
-                    logger.error(f"Failed to load model {model_name}, marking as corrupted")
-                    corrupted_models.append(model_path)
+                    logger.error(f"Failed to load X-ray model {model_name}")
+                    self.loading_warnings.append(f"X-ray model {model_name} failed to load")
                     
             except Exception as e:
-                logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
+                logger.error(f"Failed to load X-ray PCOS model {model_name}: {str(e)}")
                 self.loading_warnings.append(f"X-ray model {model_name} failed to load: {str(e)}")
-                corrupted_models.append(model_path)
                 continue
-        
-        # Remove corrupted model files
-        self._remove_corrupted_models(corrupted_models)
         
         # Normalize weights for loaded models
         if self.pcos_models:
@@ -286,11 +270,25 @@ class XrayManager:
         self.model_status["xray"]["available"] = len(available_models) > 0
         
         if loaded_count > 0:
-            logger.info(f"Successfully loaded {loaded_count} X-ray PCOS models with normalized weights")
+            logger.info(f"Successfully loaded {loaded_count} X-ray PCOS models")
         else:
             logger.warning("No X-ray PCOS models could be loaded - X-ray analysis will be unavailable")
             self.model_status["xray"]["error"] = "No models loaded successfully"
-            self.loading_warnings.append("No X-ray PCOS models could be loaded - imaging analysis unavailable")
+            self.loading_warnings.append("No X-ray PCOS models could be loaded - X-ray analysis will be unavailable")
+    
+    def _detect_architecture(self, model_name: str) -> str:
+        """Detect architecture from model name"""
+        model_name_lower = model_name.lower()
+        if "resnet" in model_name_lower:
+            return "resnet50"
+        elif "vgg" in model_name_lower:
+            return "vgg16"
+        elif "efficientnet" in model_name_lower:
+            return "efficientnet"
+        elif "detector" in model_name_lower:
+            return "detector_158"
+        else:
+            return "vgg16"  # Default fallback
     
     def _validate_model(self, model, model_path: Path) -> bool:
         """
@@ -304,399 +302,32 @@ class XrayManager:
             True if model is valid, False if corrupted
         """
         try:
-            # Get input shape from model
-            input_shape = self._get_model_input_shape(model)
-            
-            # Create dummy input data
-            dummy_input = np.random.random((1, input_shape[0], input_shape[1], 3)).astype(np.float32)
+            # Create dummy input data with consistent shape
+            dummy_input = np.random.random((1, *settings.XRAY_IMAGE_SIZE, 3)).astype(np.float32)
             
             # Try to run prediction
             prediction = model.predict(dummy_input, verbose=0)
             
             # Check if prediction has expected shape
             if prediction is None or len(prediction.shape) != 2:
-                logger.error(f"Model {model_path} returned invalid prediction shape")
+                logger.error(f"X-ray model {model_path} returned invalid prediction shape")
                 return False
             
             # Check if prediction contains valid probabilities
             if np.any(np.isnan(prediction)) or np.any(np.isinf(prediction)):
-                logger.error(f"Model {model_path} returned NaN or Inf values")
+                logger.error(f"X-ray model {model_path} returned NaN or Inf values")
                 return False
             
-            logger.debug(f"Model validation successful for {model_path}")
+            logger.debug(f"X-ray model validation successful for {model_path}")
             return True
             
         except Exception as e:
-            logger.error(f"Model validation failed for {model_path}: {str(e)}")
+            logger.error(f"X-ray model validation failed for {model_path}: {str(e)}")
             return False
     
-    def _remove_corrupted_models(self, corrupted_paths: List[Path]) -> None:
+    def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = (100, 100)) -> np.ndarray:
         """
-        Remove corrupted model files
-        
-        Args:
-            corrupted_paths: List of paths to corrupted model files
-        """
-        for model_path in corrupted_paths:
-            try:
-                if model_path.exists():
-                    # Move to backup location instead of deleting
-                    backup_path = model_path.with_suffix('.corrupted')
-                    model_path.rename(backup_path)
-                    logger.info(f"Moved corrupted model to backup: {backup_path}")
-                    self.loading_warnings.append(f"Corrupted model moved to backup: {model_path.name}")
-            except Exception as e:
-                logger.error(f"Failed to move corrupted model {model_path}: {str(e)}")
-    
-    def _load_model_with_fallback(self, model_path: Path):
-        """
-        Load model with comprehensive fallback for batch_shape and config issues
-        
-        Args:
-            model_path: Path to model file
-            
-        Returns:
-            Loaded model or None if failed
-        """
-        try:
-            # Try normal loading first
-            model = tf.keras.models.load_model(str(model_path), compile=False)
-            logger.info(f"Successfully loaded model: {model_path}")
-            return model
-            
-        except TypeError as e:
-            if "batch_shape" in str(e) or "unrecognized keyword arguments" in str(e):
-                logger.warning(f"Model {model_path} has config issues, trying fallback methods...")
-                try:
-                    # Method 1: Try loading with custom objects cleared
-                    model = tf.keras.models.load_model(
-                        str(model_path), 
-                        compile=False,
-                        custom_objects={},
-                        safe_mode=False
-                    )
-                    logger.info(f"Fallback method 1 successful for: {model_path}")
-                    return model
-                except Exception as fallback_e:
-                    logger.warning(f"Fallback method 1 failed for {model_path}: {str(fallback_e)}")
-                    
-                    # Method 2: Parse HDF5 and fix batch_shape issues
-                    try:
-                        return self._fix_batch_shape_and_load(model_path)
-                    except Exception as reconstruct_e:
-                        logger.warning(f"Batch shape fix failed for {model_path}: {str(reconstruct_e)}")
-                        
-                        # Method 3: Try to reconstruct from architecture
-                        try:
-                            return self._reconstruct_model_from_weights(model_path)
-                        except Exception as final_e:
-                            logger.error(f"All fallback methods failed for {model_path}: {str(final_e)}")
-                            return None
-            else:
-                logger.error(f"Model loading failed for {model_path}: {str(e)}")
-                return None
-        except ValueError as e:
-            if "No model config found" in str(e):
-                logger.warning(f"Model {model_path} has no config, trying weights-only reconstruction...")
-                try:
-                    return self._reconstruct_from_weights_only(model_path, model_path.stem.lower())
-                except Exception as weights_e:
-                    logger.error(f"Weights-only reconstruction failed for {model_path}: {str(weights_e)}")
-                    return None
-            else:
-                logger.error(f"Model loading failed for {model_path}: {str(e)}")
-                return None
-        except Exception as e:
-            # Check if file is corrupted
-            if "unable to open file" in str(e).lower() or "not an hdf5 file" in str(e).lower():
-                logger.error(f"Model file appears to be corrupted: {model_path}")
-                return None
-            else:
-                logger.error(f"Model loading failed for {model_path}: {str(e)}")
-                return None
-    
-    def _fix_batch_shape_and_load(self, model_path: Path):
-        """
-        Fix batch_shape issues by parsing HDF5 and rebuilding model config
-        
-        Args:
-            model_path: Path to model file
-            
-        Returns:
-            Fixed model or None if failed
-        """
-        try:
-            with h5py.File(str(model_path), 'r') as f:
-                # Try to find model config
-                model_config = None
-                
-                if 'model_config' in f.attrs:
-                    model_config = json.loads(f.attrs['model_config'].decode('utf-8'))
-                elif 'model_topology' in f.attrs:
-                    model_config = json.loads(f.attrs['model_topology'].decode('utf-8'))
-                elif 'model_config' in f:
-                    model_config = json.loads(f['model_config'][()].decode('utf-8'))
-                
-                if not model_config:
-                    raise ValueError("No model config found in HDF5 file")
-                
-                # Remove batch_shape from InputLayer configs
-                def remove_batch_shape(config):
-                    if isinstance(config, dict):
-                        if config.get('class_name') == 'InputLayer':
-                            if 'config' in config and 'batch_shape' in config['config']:
-                                del config['config']['batch_shape']
-                                logger.debug(f"Removed batch_shape from InputLayer in {model_path}")
-                        
-                        for key, value in config.items():
-                            remove_batch_shape(value)
-                    elif isinstance(config, list):
-                        for item in config:
-                            remove_batch_shape(item)
-                
-                remove_batch_shape(model_config)
-                
-                # Rebuild model from fixed config
-                model = tf.keras.models.model_from_config(model_config)
-                
-                # Load weights
-                model.load_weights(str(model_path))
-                
-                logger.info(f"Successfully fixed batch_shape issues for: {model_path}")
-                return model
-                
-        except Exception as e:
-            logger.error(f"Failed to fix batch_shape issues for {model_path}: {str(e)}")
-            raise
-    
-    def _reconstruct_model_from_weights(self, model_path: Path):
-        """
-        Detect weights-only files and reconstruct appropriate architecture
-        
-        Args:
-            model_path: Path to model file
-            
-        Returns:
-            Reconstructed model or None if failed
-        """
-        model_name = model_path.stem.lower()
-        
-        # First check if this is a weights-only file
-        try:
-            with h5py.File(str(model_path), 'r') as f:
-                has_config = ('model_config' in f.attrs or 
-                             'model_topology' in f.attrs or 
-                             'model_config' in f)
-                
-                if not has_config:
-                    logger.info(f"Detected weights-only file: {model_path}")
-                    return self._reconstruct_from_weights_only(model_path, model_name)
-        except Exception as e:
-            logger.warning(f"Could not check file structure for {model_path}: {str(e)}")
-        
-        try:
-            # Detect architecture from filename
-            if 'vgg16' in model_name:
-                base_model = tf.keras.applications.VGG16(
-                    weights=None,
-                    include_top=False,
-                    input_shape=(224, 224, 3)
-                )
-            elif 'resnet50' in model_name:
-                base_model = tf.keras.applications.ResNet50(
-                    weights=None,
-                    include_top=False,
-                    input_shape=(224, 224, 3)
-                )
-            elif 'efficientnet' in model_name:
-                base_model = tf.keras.applications.EfficientNetB0(
-                    weights=None,
-                    include_top=False,
-                    input_shape=(224, 224, 3)
-                )
-            elif 'efficientnetb1' in model_name or 'efficientnet_b1' in model_name:
-                base_model = tf.keras.applications.EfficientNetB1(
-                    weights=None,
-                    include_top=False,
-                    input_shape=(240, 240, 3)
-                )
-            elif 'efficientnetb2' in model_name or 'efficientnet_b2' in model_name:
-                base_model = tf.keras.applications.EfficientNetB2(
-                    weights=None,
-                    include_top=False,
-                    input_shape=(260, 260, 3)
-                )
-            elif 'efficientnetb3' in model_name or 'efficientnet_b3' in model_name:
-                base_model = tf.keras.applications.EfficientNetB3(
-                    weights=None,
-                    include_top=False,
-                    input_shape=(300, 300, 3)
-                )
-            elif 'detector' in model_name or 'custom' in model_name:
-                # Handle custom detector models with generic architecture
-                logger.info(f"Using generic architecture for custom model: {model_name}")
-                return self._create_generic_model()
-            elif 'mobilenet' in model_name:
-                base_model = tf.keras.applications.MobileNetV2(
-                    weights=None,
-                    include_top=False,
-                    input_shape=(224, 224, 3)
-                )
-            elif 'densenet' in model_name:
-                base_model = tf.keras.applications.DenseNet121(
-                    weights=None,
-                    include_top=False,
-                    input_shape=(224, 224, 3)
-                )
-            else:
-                logger.warning(f"Unknown architecture for {model_name}, using generic fallback")
-                # Fallback to generic model for unknown architectures
-                return self._create_generic_model()
-            
-            # Add classification head
-            model = tf.keras.Sequential([
-                base_model,
-                tf.keras.layers.GlobalAveragePooling2D(),
-                tf.keras.layers.Dense(128, activation='relu'),
-                tf.keras.layers.Dropout(0.5),
-                tf.keras.layers.Dense(2, activation='softmax')  # Binary classification
-            ])
-            
-            # Try to load weights only
-            try:
-                model.load_weights(str(model_path))
-                logger.info(f"Successfully reconstructed model from weights: {model_path}")
-                return model
-            except Exception as weights_e:
-                logger.error(f"Failed to load weights for reconstructed model {model_path}: {str(weights_e)}")
-                # Try generic fallback as last resort
-                logger.info(f"Attempting generic fallback for {model_name}")
-                return self._create_generic_model()
-                return None
-                
-        except Exception as e:
-            logger.error(f"Model reconstruction failed for {model_path}: {str(e)}")
-    
-    def _reconstruct_from_weights_only(self, model_path: Path, model_name: str):
-        """
-        Reconstruct model architecture for weights-only files
-        
-        Args:
-            model_path: Path to weights file
-            model_name: Model name for architecture detection
-            
-        Returns:
-            Reconstructed model
-        """
-        logger.info(f"Reconstructing architecture for weights-only file: {model_name}")
-        
-        # Detect architecture from filename and create appropriate model
-        if 'resnet50' in model_name:
-            base_model = tf.keras.applications.ResNet50(
-                weights=None,
-                include_top=False,
-                input_shape=(224, 224, 3)
-            )
-        elif 'vgg16' in model_name:
-            base_model = tf.keras.applications.VGG16(
-                weights=None,
-                include_top=False,
-                input_shape=(224, 224, 3)
-            )
-        elif 'efficientnetb0' in model_name:
-            base_model = tf.keras.applications.EfficientNetB0(
-                weights=None,
-                include_top=False,
-                input_shape=(224, 224, 3)
-            )
-        elif 'detector' in model_name:
-            # Custom detector architecture
-            base_model = tf.keras.Sequential([
-                tf.keras.layers.Conv2D(64, (3, 3), activation='relu', input_shape=(224, 224, 3)),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                tf.keras.layers.Conv2D(128, (3, 3), activation='relu'),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                tf.keras.layers.Conv2D(256, (3, 3), activation='relu'),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-            ])
-        else:
-            # Generic CNN for unknown architectures
-            base_model = tf.keras.Sequential([
-                tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
-            ])
-        
-        # Add classification head
-        model = tf.keras.Sequential([
-            base_model,
-            tf.keras.layers.GlobalAveragePooling2D(),
-            tf.keras.layers.Dense(128, activation='relu'),
-            tf.keras.layers.Dropout(0.5),
-            tf.keras.layers.Dense(2, activation='softmax')  # Binary classification
-        ])
-        
-        # Load weights
-        model.load_weights(str(model_path))
-        
-        logger.info(f"Successfully reconstructed weights-only model: {model_path}")
-        return model
-    
-    def _create_generic_model(self):
-        """
-        Create a generic model for unknown architectures
-        
-        Returns:
-            Generic model that can be used as fallback
-        """
-        try:
-            # Create a simple CNN model as fallback
-            model = tf.keras.Sequential([
-                tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
-                tf.keras.layers.MaxPooling2D((2, 2)),
-                tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
-                tf.keras.layers.GlobalAveragePooling2D(),
-                tf.keras.layers.Dense(128, activation='relu'),
-                tf.keras.layers.Dropout(0.5),
-                tf.keras.layers.Dense(2, activation='softmax')  # Binary classification
-            ])
-            
-            logger.info("Created generic fallback model")
-            return model
-            
-        except Exception as e:
-            logger.error(f"Failed to create generic model: {str(e)}")
-            return None
-    
-    def _get_model_input_shape(self, model) -> Tuple[int, int]:
-        """
-        Get input shape from loaded model
-        
-        Args:
-            model: Loaded TensorFlow model
-            
-        Returns:
-            Tuple of (height, width) for image preprocessing
-        """
-        try:
-            if hasattr(model, 'input_shape') and model.input_shape:
-                # Get (height, width) from model input shape
-                shape = model.input_shape
-                if len(shape) >= 3:
-                    return (shape[1], shape[2])  # (height, width)
-        except Exception:
-            pass
-        
-        # Default to standard size
-        return settings.XRAY_IMAGE_SIZE
-    
-    def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = XRAY_IMAGE_SIZE) -> np.ndarray:
-        """
-        Preprocess image for model inference
+        Preprocess image for model inference with consistent shape
         
         Args:
             image_bytes: Raw image bytes
@@ -720,77 +351,105 @@ class XrayManager:
             # Convert to numpy array and normalize to [0,1]
             img_array = np.array(image, dtype=np.float32) / 255.0
             
-            # Add batch dimension
+            # Add batch dimension - always (1, height, width, 3) for consistency
             img_array = np.expand_dims(img_array, axis=0)
             
             return img_array
             
         except Exception as e:
-            logger.error(f"Image preprocessing failed: {str(e)}")
+            logger.error(f"X-ray image preprocessing failed: {str(e)}")
             raise
     
-    async def detect_objects(self, image_bytes: bytes) -> Tuple[List[Dict], str]:
+    async def detect_objects(self, image_bytes: bytes) -> Dict[str, Any]:
         """
-        Run YOLO object detection on X-ray image
+        Detect objects in X-ray image using YOLO
         
         Args:
-            image_bytes: X-ray image bytes
+            image_bytes: Preprocessed image bytes
             
         Returns:
-            Tuple of (detections_list, visualization_path)
+            Dictionary with detection results
         """
-        detections = []
-        vis_path = ""
-        
         if not self.can_detect_objects or self.yolo_model is None:
-            logger.warning("YOLO model not available, skipping object detection")
-            return detections, vis_path
+            return {
+                "detections": [],
+                "found_labels": [],
+                "yolo_vis": None
+            }
         
         try:
-            # Convert bytes to PIL Image for YOLO
-            image = Image.open(io.BytesIO(image_bytes))
+            # Save temporary file for YOLO processing
+            temp_id = str(uuid.uuid4())[:8]
+            temp_path = UPLOADS_DIR / f"temp_yolo_{temp_id}.jpg"
+            
+            with open(temp_path, 'wb') as f:
+                f.write(image_bytes)
             
             # Run YOLO detection
-            results = self.yolo_model.predict(image, verbose=False)
+            results = self.yolo_model(str(temp_path))
             
-            # Extract detections
-            for result in results:
-                if result.boxes is not None:
-                    boxes = result.boxes
-                    for i in range(len(boxes)):
-                        detection = {
-                            "box": [float(x) for x in boxes.xyxy[i].tolist()],  # [x1, y1, x2, y2]
-                            "conf": float(boxes.conf[i]),
-                            "label": result.names[int(boxes.cls[i])]
-                        }
-                        detections.append(detection)
+            detections = []
+            found_labels = []
             
-            # Save visualization if we have detections
-            if detections and results:
-                vis_array = results[0].plot()
-                vis_image = Image.fromarray(vis_array)
+            if results and len(results) > 0:
+                result = results[0]
                 
-                # Generate unique filename for visualization
-                vis_filename = f"yolo-{uuid.uuid4().hex[:8]}.jpg"
-                vis_full_path = UPLOADS_DIR / vis_filename
-                vis_image.save(vis_full_path, 'JPEG', quality=90)
-                vis_path = f"/static/uploads/{vis_filename}"
+                if hasattr(result, 'boxes') and result.boxes is not None:
+                    boxes = result.boxes
+                    
+                    for i in range(len(boxes)):
+                        box = boxes.xyxy[i].cpu().numpy()
+                        conf = float(boxes.conf[i].cpu().numpy())
+                        cls = int(boxes.cls[i].cpu().numpy())
+                        
+                        if hasattr(result, 'names') and cls in result.names:
+                            label = result.names[cls]
+                        else:
+                            label = f"class_{cls}"
+                        
+                        detections.append({
+                            "box": box.tolist(),
+                            "conf": conf,
+                            "label": label
+                        })
+                        
+                        if label not in found_labels:
+                            found_labels.append(label)
+                
+                # Save visualization
+                vis_path = UPLOADS_DIR / f"yolo_vis_{temp_id}.jpg"
+                if hasattr(result, 'save'):
+                    result.save(str(vis_path))
+                    yolo_vis = f"/static/uploads/yolo_vis_{temp_id}.jpg"
+                else:
+                    yolo_vis = None
+            else:
+                yolo_vis = None
             
-            logger.info(f"YOLO detection completed: {len(detections)} objects found")
+            # Clean up temp file
+            if temp_path.exists():
+                temp_path.unlink()
+            
+            return {
+                "detections": detections,
+                "found_labels": found_labels,
+                "yolo_vis": yolo_vis
+            }
             
         except Exception as e:
             logger.error(f"YOLO detection failed: {str(e)}")
-            # Return empty results on failure
-            
-        return detections, vis_path
+            return {
+                "detections": [],
+                "found_labels": [],
+                "yolo_vis": None
+            }
     
-    async def predict_pcos_ensemble_roi(self, image_bytes: bytes, roi_box: List[float]) -> Dict[str, Any]:
+    async def predict_pcos_ensemble(self, image_bytes: bytes) -> Dict[str, Any]:
         """
-        Predict PCOS from a specific ROI using ensemble of all loaded models
+        Predict PCOS from X-ray using ensemble of all loaded models
         
         Args:
-            image_bytes: X-ray image bytes
-            roi_box: Bounding box [x1, y1, x2, y2]
+            image_bytes: Preprocessed image bytes
             
         Returns:
             Dictionary with per-model predictions and ensemble result
@@ -798,259 +457,78 @@ class XrayManager:
         if not self.pcos_models:
             return {
                 "per_model": {},
-                "per_model_scores": {},
-                "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": load_model_labels(Path("dummy"))
+                "ensemble_score": 0.0,
+                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
+                "labels": ["non_pcos", "pcos"]
             }
         
-        per_model_predictions = {}
         per_model_scores = {}
-        
-        try:
-            # Open image and crop ROI
-            image = Image.open(io.BytesIO(image_bytes))
-            roi = image.crop(roi_box)
-            
-            # Convert ROI back to bytes for preprocessing
-            roi_bytes = io.BytesIO()
-            roi.save(roi_bytes, format='JPEG')
-            roi_bytes = roi_bytes.getvalue()
-            
-            for model_name, model_data in self.pcos_models.items():
-                try:
-                    model = model_data["model"]
-                    input_shape = model_data.get("input_shape", settings.XRAY_IMAGE_SIZE)
-                    
-                    # Preprocess ROI
-                    roi_array = self._preprocess_image(roi_bytes, input_shape)
-                    
-                    # Run prediction
-                    prediction = model.predict(roi_array, verbose=0)
-                    
-                    # Extract probabilities
-                    if prediction.shape[1] == 1:
-                        # Single output (sigmoid)
-                        pcos_prob = float(prediction[0][0])
-                        probs = [1.0 - pcos_prob, pcos_prob]
-                    else:
-                        # Multiple outputs (softmax)
-                        probs = [float(p) for p in prediction[0]]
-                        pcos_prob = probs[1]
-                    
-                    # Store per-model results
-                    per_model_predictions[model_name] = probs
-                    per_model_scores[model_name] = pcos_prob
-                    
-                    logger.debug(f"X-ray {model_name} ROI prediction: {probs}")
-                    
-                except Exception as e:
-                    logger.error(f"PCOS ROI prediction failed for {model_name}: {str(e)}")
-                    continue
-                    
-        except Exception as e:
-            logger.error(f"ROI processing failed: {str(e)}")
-        
-        if not per_model_predictions:
-            return {
-                "per_model": {},
-                "per_model_scores": {},
-                "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": load_model_labels(Path("dummy"))
-            }
-        
-        # Compute ensemble prediction
-        ensemble_result = self._compute_ensemble(per_model_predictions)
-        
-        return {
-            "per_model": per_model_predictions,
-            "per_model_scores": per_model_scores,
-            "ensemble": ensemble_result,
-            "labels": load_model_labels(Path("dummy"))
-        }
-    
-    async def predict_pcos_ensemble_full_image(self, image_bytes: bytes) -> Dict[str, Any]:
-        """
-        Predict PCOS from full X-ray image using ensemble of all loaded models
-        
-        Args:
-            image_bytes: X-ray image bytes
-            
-        Returns:
-            Dictionary with per-model predictions and ensemble result
-        """
-        if not self.pcos_models:
-            return {
-                "per_model": {},
-                "per_model_scores": {},
-                "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": load_model_labels(Path("dummy"))
-            }
-        
-        per_model_predictions = {}
-        per_model_scores = {}
+        successful_predictions = 0
         
         for model_name, model_data in self.pcos_models.items():
             try:
                 model = model_data["model"]
                 input_shape = model_data.get("input_shape", settings.XRAY_IMAGE_SIZE)
                 
-                # Preprocess full image
+                # Preprocess image with correct size for this model
                 image_array = self._preprocess_image(image_bytes, input_shape)
                 
-                # Run prediction
+                # Run prediction with compiled function to avoid retracing
                 try:
-                    prediction = compiled_predict(model, image_array)
+                    prediction = compiled_predict_xray(model, image_array)
                     prediction = prediction.numpy()  # Convert to numpy if needed
                 except Exception:
                     # Fallback to regular predict if compiled version fails
                     prediction = model.predict(image_array, verbose=0)
                 
-                # Extract probabilities
+                # Extract PCOS probability (assuming binary classification)
                 if prediction.shape[1] == 1:
                     # Single output (sigmoid)
                     pcos_prob = float(prediction[0][0])
-                    probs = [1.0 - pcos_prob, pcos_prob]
                 else:
-                    # Multiple outputs (softmax)
-                    probs = [float(p) for p in prediction[0]]
-                    pcos_prob = probs[1]
+                    # Two outputs (softmax) - take second class (PCOS)
+                    pcos_prob = float(prediction[0][1])
                 
-                # Store per-model results
-                per_model_predictions[model_name] = probs
                 per_model_scores[model_name] = pcos_prob
-                
-                logger.debug(f"X-ray {model_name} full image prediction: {probs}")
+                successful_predictions += 1
+                logger.debug(f"X-ray {model_name} prediction: {pcos_prob:.3f}")
                 
             except Exception as e:
-                logger.error(f"PCOS full image prediction failed for {model_name}: {str(e)}")
-                self.loading_warnings.append(f"X-ray model {model_name} full image prediction failed: {str(e)}")
+                logger.error(f"X-ray PCOS prediction failed for {model_name}: {str(e)}")
+                self.loading_warnings.append(f"X-ray model {model_name} prediction failed: {str(e)}")
+                # Continue with other models
                 continue
         
-        if not per_model_predictions:
-            self.loading_warnings.append("No X-ray PCOS models available for full image prediction")
+        if not per_model_scores:
+            self.loading_warnings.append("No X-ray PCOS models available for prediction")
             return {
                 "per_model": {},
-                "per_model_scores": {},
-                "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": load_model_labels(Path("dummy"))
+                "ensemble_score": 0.0,
+                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
+                "labels": ["non_pcos", "pcos"]
             }
         
-        # Compute ensemble prediction
-        ensemble_result = self._compute_ensemble(per_model_predictions)
+        # Calculate weighted ensemble score
+        total_weight = 0.0
+        weighted_sum = 0.0
+        
+        for model_name, score in per_model_scores.items():
+            weight = self.pcos_models[model_name]["weight"]
+            weighted_sum += score * weight
+            total_weight += weight
+        
+        ensemble_score = weighted_sum / total_weight if total_weight > 0 else 0.0
         
         return {
-            "per_model": per_model_predictions,
-            "per_model_scores": per_model_scores,
-            "ensemble": ensemble_result,
-            "labels": load_model_labels(Path("dummy"))
-        }
-    
-    def _load_model_with_fallback(self, model_path: Path):
-        """
-        Load model with fallback for batch_shape compatibility issues
-        
-        Args:
-            model_path: Path to model file
-            
-        Returns:
-            Loaded model or None if failed
-        """
-        try:
-            # Try normal loading first
-            model = tf.keras.models.load_model(str(model_path), compile=False)
-            return model
-            
-        except TypeError as e:
-            if "batch_shape" in str(e) or "unrecognized keyword arguments" in str(e):
-                logger.warning(f"Model {model_path} has batch_shape issues, trying fallback...")
-                try:
-                    # Try loading without compilation and custom objects
-                    model = tf.keras.models.load_model(
-                        str(model_path), 
-                        compile=False,
-                        custom_objects={}
-                    )
-                    return model
-                except Exception as fallback_e:
-                    logger.error(f"Fallback loading failed for {model_path}: {str(fallback_e)}")
-                    return None
-            else:
-                logger.error(f"Model loading failed for {model_path}: {str(e)}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Model loading failed for {model_path}: {str(e)}")
-            return None
-    
-    def _get_model_input_shape(self, model) -> Tuple[int, int]:
-        """
-        Get input shape from loaded model
-        
-        Args:
-            model: Loaded TensorFlow model
-            
-        Returns:
-            Tuple of (height, width) for image preprocessing
-        """
-        try:
-            if hasattr(model, 'input_shape') and model.input_shape:
-                # Get (height, width) from model input shape
-                shape = model.input_shape
-                if len(shape) >= 3:
-                    return (shape[1], shape[2])  # (height, width)
-        except Exception:
-            pass
-        
-        # Default to standard size
-        return settings.XRAY_IMAGE_SIZE
-    
-    def _compute_ensemble(self, per_model_predictions: Dict[str, List[float]]) -> Dict[str, Any]:
-        """
-        Compute weighted ensemble prediction from per-model results
-        
-        Args:
-            per_model_predictions: Dictionary mapping model names to probability lists
-            
-        Returns:
-            Dictionary with ensemble results
-        """
-        if not per_model_predictions:
-            return {"prob": 0.0, "label": "unknown", "weights": {}}
-        
-        # Get weights for available models
-        available_models = list(per_model_predictions.keys())
-        weights = {name: self.pcos_models[name]["weight"] for name in available_models}
-        
-        # Compute weighted average for each class
-        num_classes = len(next(iter(per_model_predictions.values())))
-        ensemble_probs = [0.0] * num_classes
-        
-        total_weight = sum(weights.values())
-        if total_weight > 0:
-            for model_name, probs in per_model_predictions.items():
-                weight = weights[model_name]
-                for i, prob in enumerate(probs):
-                    ensemble_probs[i] += prob * weight / total_weight
-        else:
-            # Equal weighting fallback
-            for probs in per_model_predictions.values():
-                for i, prob in enumerate(probs):
-                    ensemble_probs[i] += prob / len(per_model_predictions)
-        
-        # Determine final prediction
-        max_prob_idx = np.argmax(ensemble_probs)
-        max_prob = ensemble_probs[max_prob_idx]
-        
-        # Use labels
-        labels = load_model_labels(Path("dummy"))
-        predicted_label = labels[max_prob_idx] if max_prob_idx < len(labels) else "unknown"
-        
-        return {
-            "prob": float(max_prob),
-            "probs": ensemble_probs,
-            "label": predicted_label,
-            "weights": weights,
-            "models_used": len(available_models)
+            "per_model": per_model_scores,
+            "ensemble_score": float(ensemble_score),
+            "ensemble": {
+                "method": "weighted_average",
+                "score": float(ensemble_score),
+                "models_used": successful_predictions,
+                "weights_used": {name: self.pcos_models[name]["weight"] for name in per_model_scores.keys()}
+            },
+            "labels": ["non_pcos", "pcos"]
         }
     
     async def process_xray_image(self, file: UploadFile) -> Dict[str, Any]:
@@ -1078,111 +556,36 @@ class XrayManager:
             f.write(image_bytes)
         
         try:
-            # Run YOLO detection
-            detections, yolo_vis_url = await self.detect_objects(image_bytes)
-            
             # Initialize result structure
             result = {
                 "xray_img": f"/static/uploads/{filename}",
-                "yolo_vis": yolo_vis_url,
+                "detections": [],
                 "found_labels": [],
+                "yolo_vis": None,
                 "xray_pred": None,
                 "xray_risk": "unknown",
-                "xray_models": {},
                 "per_model": {},
                 "ensemble_score": 0.0,
-                "models_used": [],
-                "detections": detections
+                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
+                "models_used": []
             }
             
-            # Extract found labels from detections
-            if detections:
-                result["found_labels"] = [det["label"] for det in detections]
+            # Run YOLO detection
+            detection_results = await self.detect_objects(image_bytes)
+            result.update(detection_results)
             
-            # Check if we have any PCOS models
-            if not self.pcos_models:
-                result["xray_pred"] = "No PCOS models available for analysis"
-                result["xray_risk"] = "unknown"
-                self.loading_warnings.append("No X-ray PCOS models loaded")
-                return result
-            
-            # Process ROIs if detections found
-            if detections:
-                all_roi_predictions = {}
-                all_roi_scores = {}
+            # Run PCOS classification if models available
+            if self.pcos_models:
+                pcos_results = await self.predict_pcos_ensemble(image_bytes)
                 
-                for roi_id, detection in enumerate(detections):
-                    roi_results = await self.predict_pcos_ensemble_roi(image_bytes, detection["box"])
-                    if roi_results["per_model"]:
-                        # Accumulate predictions across ROIs
-                        for model_name, probs in roi_results["per_model"].items():
-                            if model_name not in all_roi_predictions:
-                                all_roi_predictions[model_name] = []
-                            all_roi_predictions[model_name].append(probs)
-                        
-                        for model_name, score in roi_results["per_model_scores"].items():
-                            if model_name not in all_roi_scores:
-                                all_roi_scores[model_name] = []
-                            all_roi_scores[model_name].append(score)
-                
-                # Ensemble ROI predictions
-                if all_roi_predictions:
-                    # Average predictions across all ROIs for each model
-                    averaged_predictions = {}
-                    averaged_scores = {}
-                    
-                    for model_name, roi_probs_list in all_roi_predictions.items():
-                        # Average probabilities across ROIs
-                        num_classes = len(roi_probs_list[0])
-                        avg_probs = [0.0] * num_classes
-                        for probs in roi_probs_list:
-                            for i, prob in enumerate(probs):
-                                avg_probs[i] += prob / len(roi_probs_list)
-                        averaged_predictions[model_name] = avg_probs
-                    
-                    for model_name, roi_scores_list in all_roi_scores.items():
-                        # Average scores across ROIs
-                        averaged_scores[model_name] = sum(roi_scores_list) / len(roi_scores_list)
-                    
-                    # Store per-model predictions
-                    result["xray_models"] = averaged_predictions
-                    result["per_model"] = averaged_scores
-                    result["models_used"] = list(averaged_predictions.keys())
-                    
-                    # Compute ensemble
-                    ensemble_result = self._compute_ensemble(averaged_predictions)
-                    ensemble_score = ensemble_result["prob"]
-                    
-                    result["ensemble_score"] = ensemble_score
-                    
-                    # Determine prediction label and risk
-                    risk_level = get_risk_level(ensemble_score)
-                    result["xray_risk"] = risk_level
-                    
-                    if risk_level == "high":
-                        result["xray_pred"] = "PCOS symptoms detected in X-ray"
-                    elif risk_level == "moderate":
-                        result["xray_pred"] = "Moderate PCOS indicators in X-ray"
-                    else:
-                        result["xray_pred"] = "No PCOS symptoms detected in X-ray"
-                else:
-                    result["xray_pred"] = "No valid ROI predictions available"
-                    self.loading_warnings.append("No valid ROI predictions available")
-            
-            else:
-                # No detections - classify full image
-                full_image_results = await self.predict_pcos_ensemble_full_image(image_bytes)
-                
-                if full_image_results["per_model"]:
-                    # Store per-model predictions
-                    result["xray_models"] = full_image_results["per_model"]
-                    result["per_model"] = full_image_results["per_model_scores"]
-                    result["models_used"] = list(full_image_results["per_model"].keys())
+                if pcos_results["per_model"]:
+                    # Store detailed results
+                    result["per_model"] = pcos_results["per_model"]
+                    result["models_used"] = list(pcos_results["per_model"].keys())
+                    result["ensemble"] = pcos_results["ensemble"]
                     
                     # Get ensemble results
-                    ensemble = full_image_results["ensemble"]
-                    ensemble_score = ensemble["prob"]
-                    
+                    ensemble_score = pcos_results["ensemble_score"]
                     result["ensemble_score"] = ensemble_score
                     
                     # Determine prediction label and risk
@@ -1194,10 +597,16 @@ class XrayManager:
                     elif risk_level == "moderate":
                         result["xray_pred"] = "Moderate PCOS indicators in X-ray"
                     else:
-                        result["xray_pred"] = "No PCOS symptoms detected in X-ray"
+                        result["xray_pred"] = "No significant PCOS symptoms detected in X-ray"
                 else:
-                    result["xray_pred"] = "No PCOS models available for analysis"
-                    self.loading_warnings.append("No PCOS models available for full image analysis")
+                    # Fallback to YOLO-based assessment
+                    result["xray_pred"] = self._assess_from_yolo(result["found_labels"])
+                    result["xray_risk"] = self._get_yolo_risk(result["found_labels"])
+            else:
+                # No PCOS models available - use YOLO only
+                result["xray_pred"] = self._assess_from_yolo(result["found_labels"])
+                result["xray_risk"] = self._get_yolo_risk(result["found_labels"])
+                self.loading_warnings.append("No X-ray PCOS models available - using YOLO detection only")
             
             return result
             
@@ -1208,9 +617,39 @@ class XrayManager:
                 file_path.unlink()
             raise
     
+    def _assess_from_yolo(self, found_labels: List[str]) -> str:
+        """Generate assessment based on YOLO detections only"""
+        if not found_labels:
+            return "No significant structures detected in X-ray"
+        
+        # Simple heuristic based on detected objects
+        pcos_indicators = ['cyst', 'enlarged_ovary', 'multiple_follicles', 'polycystic']
+        detected_indicators = [label for label in found_labels if any(indicator in label.lower() for indicator in pcos_indicators)]
+        
+        if detected_indicators:
+            return f"PCOS-related structures detected: {', '.join(detected_indicators)}"
+        else:
+            return f"Anatomical structures detected: {', '.join(found_labels)}"
+    
+    def _get_yolo_risk(self, found_labels: List[str]) -> str:
+        """Determine risk level based on YOLO detections"""
+        if not found_labels:
+            return "unknown"
+        
+        # Simple heuristic based on detected objects
+        pcos_indicators = ['cyst', 'enlarged_ovary', 'multiple_follicles', 'polycystic']
+        detected_indicators = [label for label in found_labels if any(indicator in label.lower() for indicator in pcos_indicators)]
+        
+        if len(detected_indicators) >= 2:
+            return "high"
+        elif len(detected_indicators) == 1:
+            return "moderate"
+        else:
+            return "low"
+    
     def get_loading_warnings(self) -> List[str]:
         """Get any warnings from model loading"""
-        return getattr(self, 'loading_warnings', [])
+        return self.loading_warnings
     
     def get_model_status(self) -> Dict[str, Dict[str, Any]]:
         """Get current status of all X-ray models"""

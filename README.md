@@ -132,7 +132,7 @@ pip install -r requirements.txt
 # Models will be automatically discovered
 
 # Start the backend server
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
+uvicorn app:app --reload --host 127.0.0.1 --port 8000
 ```
 
 ### 2. Frontend Setup
@@ -148,9 +148,9 @@ npm run dev
 ### 3. Access the Application
 
 - **Frontend**: http://localhost:5173
-- **Backend API**: http://localhost:8000 (proxied via Vite in dev)
-- **API Documentation**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/health
+- **Backend API**: http://127.0.0.1:8000 (proxied via Vite in dev)
+- **API Documentation**: http://127.0.0.1:8000/docs
+- **Health Check**: http://127.0.0.1:8000/health
 
 ### 4. Quick Health Check
 
@@ -158,12 +158,48 @@ Verify everything is working:
 
 ```bash
 # Test backend health
-curl http://localhost:8000/health
+curl http://127.0.0.1:8000/health
 
 # Should return JSON with status: "healthy" and model availability
 ```
 
 If models fail to load due to Keras version mismatches, the system will automatically fall back to weights-only loading and continue operating with available models.
+
+## 🔧 Troubleshooting
+
+### Frontend Issues
+
+**Missing UI Component Imports**
+```bash
+# If you see "Failed to resolve import" errors for UI components
+# Make sure all shadcn/ui components are present in src/components/ui/
+# The following components are required:
+# - button.tsx, card.tsx, badge.tsx, alert.tsx, progress.tsx
+# - separator.tsx, input.tsx, label.tsx, dialog.tsx
+```
+
+**Path Alias Issues**
+```bash
+# Ensure vite.config.ts has the @ alias configured:
+# resolve: { alias: { '@': path.resolve(__dirname, './src') } }
+# And tsconfig.app.json has: "paths": { "@/*": ["src/*"] }
+```
+
+### Backend Issues
+
+**Keras Model Loading Failures**
+```bash
+# If you see "Unrecognized keyword arguments: ['batch_shape']" errors:
+# The system will automatically try weights-only fallback loading
+# Check logs for "weights-only fallback" messages
+# Models that fail to load will be skipped gracefully
+```
+
+**TensorFlow Retracing Warnings**
+```bash
+# The system uses @tf.function(reduce_retracing=True) to minimize warnings
+# Ensure consistent input shapes (1, height, width, 3) for all predictions
+```
 ## 🔧 Configuration
 
 ### Backend Configuration

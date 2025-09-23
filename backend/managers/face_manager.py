@@ -30,9 +30,9 @@ from utils.validators import validate_image, get_safe_filename
 logger = logging.getLogger(__name__)
 
 # Create a compiled prediction function to avoid retracing warnings
-@tf.function
+@tf.function(reduce_retracing=True)
 def compiled_predict(model, input_data):
-    """Compiled prediction function to avoid TensorFlow retracing warnings"""
+    """Compiled prediction function for face models to avoid TensorFlow retracing warnings"""
     return model(input_data, training=False)
 
 def _try_load_full_model(path: str):
@@ -838,9 +838,6 @@ class FaceManager:
                 "per_model": {},
                 "ensemble_score": 0.0,
                 "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
-                "labels": ["non_pcos", "pcos"]
-            }
-        
         # Calculate weighted ensemble score
         total_weight = 0.0
         weighted_sum = 0.0

@@ -173,7 +173,7 @@ async def enhanced_health_check():
             error=face_status.get("gender", {}).get("error"),
         )
 
-        models_status["face"] = ModelStatus(
+        models_status["face_ensemble"] = ModelStatus(
             status="loaded" if face_status.get("face", {}).get("loaded", False) else "not_loaded",
             file_exists=face_status.get("face", {}).get("available", False),
             lazy_loadable=face_manager.can_lazy_load_pcos(),
@@ -188,7 +188,7 @@ async def enhanced_health_check():
             error=xray_status.get("yolo", {}).get("error"),
         )
 
-        models_status["xray"] = ModelStatus(
+        models_status["xray_ensemble"] = ModelStatus(
             status="loaded" if xray_status.get("xray", {}).get("loaded", False) else "not_loaded",
             file_exists=xray_status.get("xray", {}).get("available", False),
             lazy_loadable=xray_manager.can_lazy_load_pcos(),
@@ -417,7 +417,7 @@ async def structured_predict(
         else:
             combined_score = 0.0
             combined_risk = "unknown"
-            explanation = "No analysis results available"
+            explanation = "Analysis unavailable - no models could process the uploaded images"
 
         final = FinalResult(
             risk=combined_risk,
