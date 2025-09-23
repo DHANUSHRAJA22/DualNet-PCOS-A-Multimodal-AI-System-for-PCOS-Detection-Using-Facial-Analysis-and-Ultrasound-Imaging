@@ -151,8 +151,8 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
             <div>
               <Label htmlFor="api-url">Backend API URL</Label>
               <Input
-                <li>Start your FastAPI backend locally on port 8000</li>
-                <li>Expose it publicly with ngrok: <code className="bg-muted px-1 rounded">ngrok http 8000</code></li>
+                id="api-url"
+                value={apiUrl}
                 onChange={(e) => setApiUrl(e.target.value)}
                 placeholder="https://your-backend.com"
                 className="mt-1"
@@ -160,6 +160,10 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
               <p className="text-xs text-muted-foreground mt-1">
                 <strong>Quick test:</strong> Open <code className="bg-muted px-1 rounded">{resolveApiBase() || 'http://localhost:8000'}/health</code> in your browser - it should return JSON with model status.
               </p>
+              <ul className="text-xs text-muted-foreground mt-2 space-y-1">
+                <li>Start your FastAPI backend locally on port 8000</li>
+                <li>Expose it publicly with ngrok: <code className="bg-muted px-1 rounded">ngrok http 8000</code></li>
+              </ul>
             </div>
             <div className="flex gap-2">
               <Button 
