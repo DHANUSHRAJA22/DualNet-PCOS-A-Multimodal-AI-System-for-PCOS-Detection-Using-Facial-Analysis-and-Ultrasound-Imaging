@@ -134,6 +134,15 @@ def ensure_json_serializable(obj: Any) -> Any:
     else:
         return obj
 
+def get_risk_level(score: float) -> str:
+    """Helper function to determine risk level from score"""
+    if score < settings.RISK_LOW_THRESHOLD:
+        return "low"
+    elif score < settings.RISK_HIGH_THRESHOLD:
+        return "moderate"
+    else:
+        return "high"
+
 @app.get("/health", response_model=EnhancedHealthResponse)
 async def enhanced_health_check():
     """Enhanced health check with detailed model discovery status"""
