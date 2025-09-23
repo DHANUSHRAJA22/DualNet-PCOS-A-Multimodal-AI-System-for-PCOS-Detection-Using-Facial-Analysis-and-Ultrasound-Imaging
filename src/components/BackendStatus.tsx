@@ -32,6 +32,15 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
         try {
           const details = await getEnhancedHealth()
           setHealthDetails(details)
+          
+          // Check for missing X-ray models
+          const xrayModels = Object.keys(details.models || {}).filter(key => 
+            key.includes('xray') && details.models[key].lazy_loadable
+          )
+          
+          if (xrayModels.length === 0) {
+            toast.warning('No X-ray models available - only facial analysis will work', { duration: 6000 })
+          }
         } catch (error) {
           console.warn('Could not fetch detailed health info:', error)
         }
@@ -127,6 +136,9 @@ export function BackendStatus({ onStatusChange }: BackendStatusProps) {
         {healthDetails && status === 'online' && (
           <Badge variant="outline" className="text-xs">
             v{healthDetails.version} • {Math.round(healthDetails.uptime_seconds)}s uptime
+            {healthDetails.config?.use_ensemble && (
+              <span className="ml-1">• Ensemble</span>
+            )}
           </Badge>
         )}
       </div>

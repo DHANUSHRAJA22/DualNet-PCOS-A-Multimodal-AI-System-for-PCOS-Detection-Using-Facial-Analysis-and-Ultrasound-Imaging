@@ -168,7 +168,7 @@ export async function postPredict(formData: FormData, useStructured: boolean = t
   const response = await fetchWithTimeout(url, {
     method: 'POST',
     body: formData,
-  }, 10000) // Longer timeout for file upload
+  }, 30000) // Longer timeout for ensemble processing
   
   if (!response.ok) {
     let errorMessage = 'Analysis failed'
@@ -186,6 +186,16 @@ export async function postPredict(formData: FormData, useStructured: boolean = t
   }
   
   return response.json()
+}
+
+// Helper function to get risk level from backend thresholds
+export function getRiskLevelFromScore(score: number, thresholds?: { low: number; high: number }): 'low' | 'moderate' | 'high' {
+  const lowThreshold = thresholds?.low ?? 0.33
+  const highThreshold = thresholds?.high ?? 0.66
+  
+  if (score < lowThreshold) return 'low'
+  if (score < highThreshold) return 'moderate'
+  return 'high'
 }
 
 export async function postPredictFile(file: File, type: 'face' | 'xray'): Promise<any> {
