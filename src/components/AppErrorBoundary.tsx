@@ -42,7 +42,7 @@ export default function AppErrorBoundary() {
                 Go Home
               </Button>
               <Button onClick={handleReload} variant="outline" className="flex-1">
-                <RefreshCw className="w-4 h-4 mr-2" />
+                <RefreshCw className="w-4 w-4 mr-2" />
                 Reload
               </Button>
             </div>

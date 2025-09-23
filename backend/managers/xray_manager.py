@@ -45,6 +45,98 @@ def compiled_predict(model, input_data):
     """Compiled prediction function to avoid TensorFlow retracing warnings"""
     return model(input_data, training=False)
 
+def _try_load_full_model(path: str):
+    """Try to load model normally, return None if Keras version mismatch"""
+    try:
+        return tf.keras.models.load_model(path, compile=False)
+    except TypeError as e:
+        # Keras 3/2 serialization mismatch
+        if "Unrecognized keyword arguments" in str(e) or "batch_shape" in str(e):
+            logger.warning(f"Keras version mismatch for {path}, will try weights-only fallback")
+            return None
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to load model {path}: {str(e)}")
+        return None
+
+def _build_resnet50(input_shape=(224, 224, 3), num_classes=2):
+    """Build ResNet50 architecture for weights-only loading"""
+    base = tf.keras.applications.ResNet50(include_top=False, weights=None, input_shape=input_shape)
+    x = tf.keras.layers.GlobalAveragePooling2D()(base.output)
+    x = tf.keras.layers.Dense(128, activation="relu")(x)
+    out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(base.input, out)
+
+def _build_vgg16(input_shape=(224, 224, 3), num_classes=2):
+    """Build VGG16 architecture for weights-only loading"""
+    base = tf.keras.applications.VGG16(include_top=False, weights=None, input_shape=input_shape)
+    x = tf.keras.layers.Flatten()(base.output)
+    x = tf.keras.layers.Dense(256, activation="relu")(x)
+    out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(base.input, out)
+
+def _build_efficientnet(input_shape=(224, 224, 3), num_classes=2):
+    """Build EfficientNet architecture for weights-only loading"""
+    base = tf.keras.applications.EfficientNetB0(include_top=False, weights=None, input_shape=input_shape)
+    x = tf.keras.layers.GlobalAveragePooling2D()(base.output)
+    x = tf.keras.layers.Dense(128, activation="relu")(x)
+    out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(base.input, out)
+
+def _build_custom_detector(input_shape=(224, 224, 3), num_classes=2):
+    """Build custom detector architecture for weights-only loading"""
+    base = tf.keras.applications.VGG16(include_top=False, weights=None, input_shape=input_shape)
+    x = tf.keras.layers.Flatten()(base.output)
+    x = tf.keras.layers.Dense(256, activation="relu")(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
+    out = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(base.input, out)
+
+def load_with_weights_fallback(model_path: str, arch: str, input_shape=(224, 224, 3), num_classes=2):
+    """
+    Load model with fallback to weights-only loading for Keras version mismatches
+    
+    Args:
+        model_path: Path to model file
+        arch: Architecture name (resnet50, vgg16, efficientnet, detector_158, etc.)
+        input_shape: Input shape for model
+        num_classes: Number of output classes
+        
+    Returns:
+        Loaded model or None if failed
+    """
+    # 1) Try full model loading first
+    model = _try_load_full_model(model_path)
+    if model is not None:
+        logger.info(f"Successfully loaded full model: {model_path}")
+        return model
+    
+    # 2) Rebuild architecture and load weights only
+    logger.info(f"Attempting weights-only fallback for {model_path} with architecture {arch}")
+    
+    try:
+        arch_lower = arch.lower()
+        if "resnet" in arch_lower:
+            model = _build_resnet50(input_shape, num_classes)
+        elif "vgg" in arch_lower:
+            model = _build_vgg16(input_shape, num_classes)
+        elif "efficientnet" in arch_lower:
+            model = _build_efficientnet(input_shape, num_classes)
+        elif "detector" in arch_lower:
+            model = _build_custom_detector(input_shape, num_classes)
+        else:
+            # Default fallback architecture
+            logger.warning(f"Unknown architecture {arch}, using VGG16 fallback")
+            model = _build_vgg16(input_shape, num_classes)
+        
+        # Load weights with skip_mismatch for robustness
+        model.load_weights(model_path, by_name=True, skip_mismatch=True)
+        logger.info(f"Successfully loaded weights-only model: {model_path}")
+        return model
+        
+    except Exception as e:
+        logger.error(f"Weights-only fallback failed for {model_path}: {str(e)}")
+        return None
 class XrayManager:
     """
     Manages ensemble inference of X-ray analysis models

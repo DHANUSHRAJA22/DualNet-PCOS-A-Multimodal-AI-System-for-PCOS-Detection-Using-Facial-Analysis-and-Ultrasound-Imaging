@@ -427,7 +427,7 @@ async def structured_predict(
         )
 
         processing_time = (datetime.now() - start_time).total_seconds() * 1000.0
-        logger.info(f"Structured prediction completed in {processing_time:.2f}ms")
+        logger.info(f"Structured prediction completed in {processing_time:.2f}ms with {len(warnings)} warnings")
 
         response_data = {
             "ok": True,

@@ -148,7 +148,7 @@ export function IndexPage() {
         formData.append('xray_img', xrayImage.file)
       }
 
-      const results = await postPredict(formData, true) // Use structured format
+      const results = await postPredict(formData, true) // Use structured /predict endpoint
       
       // Pass structured results directly to Results page
       navigate('/results', { state: { results: results, healthDetails: healthDetails } })

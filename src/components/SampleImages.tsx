@@ -77,10 +77,11 @@ export function SampleImages({ onSelectFaceSample, onSelectXraySample }: SampleI
 
       if (type === 'face') {
         onSelectFaceSample(processedImage)
+        toast.success(`${sample.name} loaded successfully`)
       } else {
         onSelectXraySample(processedImage)
+        toast.success(`${sample.name} loaded successfully`)
       }
-      // Don't show success toast here as it will be shown by the upload component
     } catch (error) {
       toast.error(`Failed to load sample image: ${error instanceof Error ? error.message : 'Unknown error'}`)
       console.error('Sample image loading error:', error)
