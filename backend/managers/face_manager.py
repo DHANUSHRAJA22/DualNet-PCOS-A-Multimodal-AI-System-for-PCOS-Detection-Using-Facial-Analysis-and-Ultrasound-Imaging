@@ -9,6 +9,7 @@ import os
 import uuid
 import logging
 import json
+import h5py
 from typing import Dict, Optional, Any, Tuple
 from pathlib import Path
 import numpy as np
@@ -70,7 +71,8 @@ class FaceManager:
         # Load gender classifier
         self._load_gender_model()
         
-        # Load PCOS classification models
+        # Load PCOS classification models and collect warnings
+        self.loading_warnings = []
         self._load_pcos_models()
         
         logger.info(f"Face manager initialized. Gender detection: {self.can_predict_gender}, "
@@ -137,6 +139,7 @@ class FaceManager:
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
+                self.loading_warnings.append(f"Face model {model_name} failed to load: {str(e)}")
                 continue
         
         # Normalize weights for loaded models
@@ -159,10 +162,11 @@ class FaceManager:
         else:
             logger.warning("No face PCOS models could be loaded - face analysis will be unavailable")
             self.model_status["face"]["error"] = "No models loaded successfully"
+            self.loading_warnings.append("No face PCOS models could be loaded - facial analysis unavailable")
     
     def _load_model_with_fallback(self, model_path: Path):
         """
-        Load model with enhanced fallback for batch_shape and config issues
+        Load model with comprehensive fallback for batch_shape and config issues
         
         Args:
             model_path: Path to model file
@@ -192,12 +196,18 @@ class FaceManager:
                 except Exception as fallback_e:
                     logger.warning(f"Fallback method 1 failed for {model_path}: {str(fallback_e)}")
                     
-                    # Method 2: Try to reconstruct from architecture
+                    # Method 2: Parse HDF5 and fix batch_shape issues
                     try:
-                        return self._reconstruct_model_from_weights(model_path)
+                        return self._fix_batch_shape_and_load(model_path)
                     except Exception as reconstruct_e:
-                        logger.error(f"All fallback methods failed for {model_path}: {str(reconstruct_e)}")
-                        return None
+                        logger.warning(f"Batch shape fix failed for {model_path}: {str(reconstruct_e)}")
+                        
+                        # Method 3: Try to reconstruct from architecture
+                        try:
+                            return self._reconstruct_model_from_weights(model_path)
+                        except Exception as final_e:
+                            logger.error(f"All fallback methods failed for {model_path}: {str(final_e)}")
+                            return None
             else:
                 logger.error(f"Model loading failed for {model_path}: {str(e)}")
                 return None
@@ -206,9 +216,63 @@ class FaceManager:
             logger.error(f"Model loading failed for {model_path}: {str(e)}")
             return None
     
+    def _fix_batch_shape_and_load(self, model_path: Path):
+        """
+        Fix batch_shape issues by parsing HDF5 and rebuilding model config
+        
+        Args:
+            model_path: Path to model file
+            
+        Returns:
+            Fixed model or None if failed
+        """
+        try:
+            with h5py.File(str(model_path), 'r') as f:
+                # Try to find model config
+                model_config = None
+                
+                if 'model_config' in f.attrs:
+                    model_config = json.loads(f.attrs['model_config'].decode('utf-8'))
+                elif 'model_topology' in f.attrs:
+                    model_config = json.loads(f.attrs['model_topology'].decode('utf-8'))
+                elif 'model_config' in f:
+                    model_config = json.loads(f['model_config'][()].decode('utf-8'))
+                
+                if not model_config:
+                    raise ValueError("No model config found in HDF5 file")
+                
+                # Remove batch_shape from InputLayer configs
+                def remove_batch_shape(config):
+                    if isinstance(config, dict):
+                        if config.get('class_name') == 'InputLayer':
+                            if 'config' in config and 'batch_shape' in config['config']:
+                                del config['config']['batch_shape']
+                                logger.debug(f"Removed batch_shape from InputLayer in {model_path}")
+                        
+                        for key, value in config.items():
+                            remove_batch_shape(value)
+                    elif isinstance(config, list):
+                        for item in config:
+                            remove_batch_shape(item)
+                
+                remove_batch_shape(model_config)
+                
+                # Rebuild model from fixed config
+                model = tf.keras.models.model_from_config(model_config)
+                
+                # Load weights
+                model.load_weights(str(model_path))
+                
+                logger.info(f"Successfully fixed batch_shape issues for: {model_path}")
+                return model
+                
+        except Exception as e:
+            logger.error(f"Failed to fix batch_shape issues for {model_path}: {str(e)}")
+            raise
+    
     def _reconstruct_model_from_weights(self, model_path: Path):
         """
-        Attempt to reconstruct model from architecture hints and weights
+        Detect weights-only files and reconstruct appropriate architecture
         
         Args:
             model_path: Path to model file
@@ -217,6 +281,19 @@ class FaceManager:
             Reconstructed model or None if failed
         """
         model_name = model_path.stem.lower()
+        
+        # First check if this is a weights-only file
+        try:
+            with h5py.File(str(model_path), 'r') as f:
+                has_config = ('model_config' in f.attrs or 
+                             'model_topology' in f.attrs or 
+                             'model_config' in f)
+                
+                if not has_config:
+                    logger.info(f"Detected weights-only file: {model_path}")
+                    return self._reconstruct_from_weights_only(model_path, model_name)
+        except Exception as e:
+            logger.warning(f"Could not check file structure for {model_path}: {str(e)}")
         
         try:
             # Detect architecture from filename
@@ -324,6 +401,63 @@ class FaceManager:
         except Exception as e:
             logger.error(f"Failed to create generic model: {str(e)}")
             return None
+    
+    def _reconstruct_from_weights_only(self, model_path: Path, model_name: str):
+        """
+        Reconstruct model architecture for weights-only files
+        
+        Args:
+            model_path: Path to weights file
+            model_name: Model name for architecture detection
+            
+        Returns:
+            Reconstructed model
+        """
+        logger.info(f"Reconstructing architecture for weights-only file: {model_name}")
+        
+        # Detect architecture from filename and create appropriate model
+        if 'resnet50' in model_name:
+            base_model = tf.keras.applications.ResNet50(
+                weights=None,
+                include_top=False,
+                input_shape=(224, 224, 3)
+            )
+        elif 'vgg16' in model_name:
+            base_model = tf.keras.applications.VGG16(
+                weights=None,
+                include_top=False,
+                input_shape=(224, 224, 3)
+            )
+        elif 'efficientnetb0' in model_name:
+            base_model = tf.keras.applications.EfficientNetB0(
+                weights=None,
+                include_top=False,
+                input_shape=(224, 224, 3)
+            )
+        else:
+            # Generic CNN for unknown architectures
+            base_model = tf.keras.Sequential([
+                tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)),
+                tf.keras.layers.MaxPooling2D((2, 2)),
+                tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
+                tf.keras.layers.MaxPooling2D((2, 2)),
+                tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
+            ])
+        
+        # Add classification head
+        model = tf.keras.Sequential([
+            base_model,
+            tf.keras.layers.GlobalAveragePooling2D(),
+            tf.keras.layers.Dense(128, activation='relu'),
+            tf.keras.layers.Dropout(0.5),
+            tf.keras.layers.Dense(2, activation='softmax')  # Binary classification
+        ])
+        
+        # Load weights
+        model.load_weights(str(model_path))
+        
+        logger.info(f"Successfully reconstructed weights-only model: {model_path}")
+        return model
     
     def _get_model_input_shape(self, model) -> Tuple[int, int]:
         """
@@ -609,6 +743,10 @@ class FaceManager:
             if file_path.exists():
                 file_path.unlink()
             raise
+    
+    def get_loading_warnings(self) -> List[str]:
+        """Get any warnings from model loading"""
+        return getattr(self, 'loading_warnings', [])
     
     def get_model_status(self) -> Dict[str, Dict[str, Any]]:
         """Get current status of all face models"""

@@ -1,13 +1,13 @@
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertCircle, Info } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Info, User } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { ResultCard } from '../components/ResultCard';
 import { RiskGauge } from '../components/RiskGauge';
 import { AIPerformanceMetrics } from '../components/AIPerformanceMetrics';
-import { ConfidenceVisualization } from '../components/ConfidenceVisualization';
 import { MedicalDisclaimer } from '../components/MedicalDisclaimer';
 import type { StructuredPredictionResponse, EnhancedHealthResponse } from '../lib/api';
 
@@ -61,6 +61,10 @@ export function Results() {
     high: healthDetails.config.risk_thresholds?.high || 0.66
   } : { low: 0.33, high: 0.66 };
 
+  // Find face modality for gender display
+  const faceModality = results.modalities.find(m => m.type === 'face');
+  const xrayModality = results.modalities.find(m => m.type === 'xray');
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <div className="max-w-6xl mx-auto space-y-6">
@@ -92,6 +96,41 @@ export function Results() {
           </Alert>
         )}
 
+        {/* Gender Detection Display */}
+        {faceModality?.gender && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <User className="w-5 h-5" />
+                Gender Detection
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 mb-2">
+                    Detected Gender: <span className="font-semibold capitalize">{faceModality.gender.label}</span>
+                  </p>
+                  <div className="flex gap-4 text-sm">
+                    <div>Male: {(faceModality.gender.male * 100).toFixed(1)}%</div>
+                    <div>Female: {(faceModality.gender.female * 100).toFixed(1)}%</div>
+                  </div>
+                </div>
+                <Badge 
+                  variant="outline" 
+                  className={`capitalize ${
+                    faceModality.gender.label === 'female' 
+                      ? 'border-pink-200 text-pink-700 bg-pink-50' 
+                      : 'border-blue-200 text-blue-700 bg-blue-50'
+                  }`}
+                >
+                  {faceModality.gender.label} ({(Math.max(faceModality.gender.male, faceModality.gender.female) * 100).toFixed(1)}%)
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Risk Overview */}
         <Card>
           <CardHeader>
@@ -100,7 +139,7 @@ export function Results() {
           <CardContent>
             <div className="grid md:grid-cols-2 gap-6">
               <RiskGauge 
-                risk={finalRisk}
+                riskLevel={finalRisk as 'low' | 'moderate' | 'high' | 'unknown'}
                 confidence={finalConfidence}
                 thresholds={thresholds}
               />
@@ -129,6 +168,18 @@ export function Results() {
                       <div>Fusion Mode: {results.final.fusion_mode}</div>
                       <div>Risk Thresholds: Low &lt; {(thresholds.low * 100).toFixed(0)}%, High ≥ {(thresholds.high * 100).toFixed(0)}%</div>
                       <div>Models Used: {results.debug?.models_used?.length || 0}</div>
+                      {results.debug?.weights && Object.keys(results.debug.weights).length > 0 && (
+                        <div>
+                          Ensemble Weights: 
+                          {Object.entries(results.debug.weights).map(([modality, weights]: [string, any]) => (
+                            <div key={modality} className="ml-2">
+                              {modality}: {Object.entries(weights).map(([model, weight]: [string, any]) => 
+                                `${model}=${weight.toFixed(3)}`
+                              ).join(', ')}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -140,19 +191,48 @@ export function Results() {
         {/* Detailed Results */}
         <div className="grid lg:grid-cols-2 gap-6">
           {results.modalities.map((modality, index) => (
-            <ResultCard
-              key={`${modality.type}-${index}`}
-              title={modality.type === 'face' ? 'Facial Analysis' : 'X-ray Analysis'}
-              prediction={modality.label}
-              scores={modality.scores}
-              originalImage={modality.original_img}
-              visualizationImage={modality.visualization}
-              foundLabels={modality.found_labels}
-              riskLevel={modality.risk as 'low' | 'moderate' | 'high' | 'unknown'}
-              confidence={finalConfidence}
-              thresholds={thresholds}
-              modality={modality}
-            />
+            <div key={`${modality.type}-${index}`}>
+              {/* Handle missing X-ray models gracefully */}
+              {modality.type === 'xray' && (!modality.per_model || Object.keys(modality.per_model).length === 0) ? (
+                <Card className="border-2 border-amber-200 bg-gradient-to-br from-amber-50 to-orange-50">
+                  <CardHeader>
+                    <CardTitle className="text-xl font-bold text-slate-800">X-ray Analysis</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <Alert className="border-amber-200 bg-amber-50">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>
+                        X-ray PCOS models unavailable—imaging analysis skipped.
+                      </AlertDescription>
+                    </Alert>
+                    {modality.original_img && (
+                      <div>
+                        <h4 className="font-semibold mb-3 text-slate-800">Uploaded Image</h4>
+                        <img
+                          src={modality.original_img}
+                          alt="X-ray"
+                          className="w-full max-h-64 object-contain rounded-lg border-2 border-slate-200 bg-white shadow-lg"
+                          loading="lazy"
+                        />
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ) : (
+                <ResultCard
+                  title={modality.type === 'face' ? 'Facial Analysis' : 'X-ray Analysis'}
+                  prediction={modality.label}
+                  scores={modality.scores}
+                  originalImage={modality.original_img}
+                  visualizationImage={modality.visualization}
+                  foundLabels={modality.found_labels}
+                  riskLevel={modality.risk as 'low' | 'moderate' | 'high' | 'unknown'}
+                  confidence={finalConfidence}
+                  thresholds={thresholds}
+                  modality={modality}
+                />
+              )}
+            </div>
           ))}
         </div>
 
