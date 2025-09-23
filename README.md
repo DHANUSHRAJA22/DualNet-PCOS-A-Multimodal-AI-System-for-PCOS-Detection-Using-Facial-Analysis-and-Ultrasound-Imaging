@@ -132,7 +132,7 @@ pip install -r requirements.txt
 # Models will be automatically discovered
 
 # Start the backend server
-uvicorn app:app --reload --port 5000
+uvicorn app:app --reload --port 8000
 ```
 
 ### 2. Frontend Setup
@@ -148,9 +148,9 @@ npm run dev
 ### 3. Access the Application
 
 - **Frontend**: http://localhost:5173
-- **Backend API**: http://localhost:5000
-- **API Documentation**: http://localhost:5000/docs
-- **Health Check**: http://localhost:5000/health
+- **Backend API**: http://localhost:8000
+- **API Documentation**: http://localhost:8000/docs
+- **Health Check**: http://localhost:8000/health
 
 ## 🔧 Configuration
 
@@ -167,7 +167,7 @@ Edit `config.py` or use environment variables:
 The frontend automatically detects the backend URL:
 1. Query parameter: `?api=https://your-backend.com`
 2. Environment variable: `VITE_API_BASE`
-3. Default: Vite proxy to localhost:5000
+3. Default: Vite proxy to localhost:8000
 
 ## 📡 API Endpoints (Ensemble Enhanced)
 
@@ -404,6 +404,7 @@ cd backend
 heroku create your-pcos-backend
 heroku config:set ALLOWED_ORIGINS=https://your-frontend.com
 heroku config:set DEBUG=false
+heroku config:set PORT=8000
 git push heroku main
 
 # Deploy frontend to Netlify/Vercel

@@ -6,6 +6,7 @@ Supports ensemble inference with multiple models per modality.
 """
 
 import os
+import glob
 from pathlib import Path
 from pydantic import BaseModel
 from typing import Dict, List, Optional
@@ -24,7 +25,7 @@ class Settings(BaseModel):
     
     # Server configuration
     HOST: str = os.getenv("HOST", "127.0.0.1")
-    PORT: int = int(os.getenv("PORT", "5000"))
+    PORT: int = int(os.getenv("PORT", "8000"))
     DEBUG: bool = os.getenv("DEBUG", "true").lower() == "true"
     
     # Ensemble configuration
@@ -41,19 +42,9 @@ class Settings(BaseModel):
     ALLOWED_MIME_TYPES: List[str] = ["image/jpeg", "image/png", "image/webp"]
     STATIC_TTL_SECONDS: int = int(os.getenv("STATIC_TTL_SECONDS", "3600"))
     
-    # Model configuration
+    # Model configuration - hardcoded exact filenames
     GENDER_MODEL: str = "gender_classifier.h5"
     YOLO_MODEL: str = "bestv8.pt"
-    
-    # Default ensemble weights (can be overridden by environment variables)
-    DEFAULT_ENSEMBLE_WEIGHTS: Dict[str, float] = {
-        "vgg16_pcos": 0.2,
-        "resnet50_pcos": 0.2,
-        "efficientnetb0_pcos": 0.2,
-        "efficientnetb1_pcos": 0.2,
-        "efficientnetb2_pcos": 0.1,
-        "efficientnetb3_pcos": 0.1
-    }
     
     # Risk thresholds
     RISK_LOW_THRESHOLD: float = 0.33
@@ -77,41 +68,22 @@ FACE_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 XRAY_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 YOLO_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Model Configuration
-FACE_MODELS = {
-    "VGG16": "vgg16_pcos.h5",
-    "ResNet50": "resnet50_pcos.h5", 
-    "EfficientNetB0": "efficientnetb0_pcos.h5",
-    "EfficientNetB1": "efficientnetb1_pcos.h5",
-    "EfficientNetB2": "efficientnetb2_pcos.h5",
-    "EfficientNetB3": "efficientnetb3_pcos.h5"
-}
+# Hardcoded exact PCOS model filenames
+EXPECTED_FACE_MODELS = [
+    "pcos_vgg16.h5",
+    "pcos_resnet50.h5", 
+    "pcos_efficientnetb0.h5",
+    "pcos_efficientnetb1.h5",
+    "pcos_efficientnetb2.h5",
+    "pcos_efficientnetb3.h5"
+]
 
-XRAY_MODELS = {
-    "VGG16": "vgg16_xray.h5",
-    "ResNet50": "resnet50_xray.h5",
-    "EfficientNetB0": "efficientnetb0_xray.h5"
-}
-
-# Best single models (fallback when ensemble disabled)
-BEST_FACE_MODEL = "VGG16"
-BEST_XRAY_MODEL = "VGG16"
-
-# Model ensemble weights (can be overridden by environment variables)
-FACE_ENSEMBLE_WEIGHTS = {
-    "VGG16": 0.2,
-    "ResNet50": 0.2,
-    "EfficientNetB0": 0.2,
-    "EfficientNetB1": 0.2,
-    "EfficientNetB2": 0.1,
-    "EfficientNetB3": 0.1
-}
-
-XRAY_ENSEMBLE_WEIGHTS = {
-    "VGG16": 0.4,
-    "ResNet50": 0.35,
-    "EfficientNetB0": 0.25
-}
+EXPECTED_XRAY_MODELS = [
+    "pcos_vgg16.h5",
+    "pcos_resnet50.h5",
+    "pcos_efficientnetb0.h5",
+    "pcos_detector_158.h5"
+]
 
 # Class labels
 FACE_LABELS = ["non_pcos", "pcos"]
@@ -137,30 +109,41 @@ def get_risk_level(score: float) -> str:
 
 def get_available_face_models() -> Dict[str, Path]:
     """
-    Get available face models from the face models directory
+    Auto-discover available face PCOS models using exact hardcoded filenames
     
     Returns:
         Dictionary mapping model names to file paths for available models
     """
     available = {}
-    for model_name, filename in FACE_MODELS.items():
+    
+    for filename in EXPECTED_FACE_MODELS:
         model_path = FACE_MODELS_DIR / filename
-        if model_path.exists():
+        if model_path.exists() and model_path.is_file():
+            # Use stem without 'pcos_' prefix as model name
+            model_name = model_path.stem.replace('pcos_', '')
             available[model_name] = model_path
+    
     return available
 
 def get_available_xray_models() -> Dict[str, Path]:
     """
-    Get available X-ray models from the xray models directory
+    Auto-discover available X-ray PCOS models using exact hardcoded filenames
     
     Returns:
         Dictionary mapping model names to file paths for available models
     """
     available = {}
-    for model_name, filename in XRAY_MODELS.items():
+    
+    for filename in EXPECTED_XRAY_MODELS:
         model_path = XRAY_MODELS_DIR / filename
-        if model_path.exists():
+        if model_path.exists() and model_path.is_file():
+            # Use stem without 'pcos_' prefix as model name, handle special case
+            if filename == "pcos_detector_158.h5":
+                model_name = "detector_158"
+            else:
+                model_name = model_path.stem.replace('pcos_', '')
             available[model_name] = model_path
+    
     return available
 
 def get_model_labels(model_type: str) -> List[str]:
@@ -191,13 +174,16 @@ def get_ensemble_weights(model_type: str) -> Dict[str, float]:
         Dictionary mapping model names to weights
     """
     if model_type == 'face':
-        weights = FACE_ENSEMBLE_WEIGHTS.copy()
+        available_models = get_available_face_models()
         prefix = "FACE_ENSEMBLE_WEIGHT_"
     elif model_type == 'xray':
-        weights = XRAY_ENSEMBLE_WEIGHTS.copy()
+        available_models = get_available_xray_models()
         prefix = "XRAY_ENSEMBLE_WEIGHT_"
     else:
         return {}
+    
+    # Initialize with default weights (1.0 for each available model)
+    weights = {model_name: 1.0 for model_name in available_models.keys()}
     
     # Override with environment variables if provided
     for model_name in weights.keys():

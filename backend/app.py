@@ -135,12 +135,10 @@ def ensure_json_serializable(obj: Any) -> Any:
         return obj
 
 def get_risk_level(score: float) -> str:
-    """Convert probability score into categorical risk"""
-    if score is None:
-        return "unknown"
-    if score < 0.33:
+    """Helper function to determine risk level from score"""
+    if score < settings.RISK_LOW_THRESHOLD:
         return "low"
-    elif score < 0.66:
+    elif score < settings.RISK_HIGH_THRESHOLD:
         return "moderate"
     else:
         return "high"
