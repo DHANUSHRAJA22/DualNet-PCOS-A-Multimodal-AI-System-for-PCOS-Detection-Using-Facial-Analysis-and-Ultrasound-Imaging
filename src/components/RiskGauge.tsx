@@ -11,7 +11,7 @@ interface RiskGaugeProps {
 }
 
 export function RiskGauge({ riskLevel, confidence = 0, thresholds = { low: 0.33, high: 0.66 }, className }: RiskGaugeProps) {
-  // Convert confidence to percentage if needed
+  // Ensure confidence is in percentage format (0-100)
   const confidencePercent = confidence > 1 ? confidence : confidence * 100
   
   // Calculate gauge percentage based on risk level and actual confidence
@@ -147,9 +147,9 @@ export function RiskGauge({ riskLevel, confidence = 0, thresholds = { low: 0.33,
                   transition={{ delay: 0.5, duration: 0.5 }}
                   className={`text-2xl font-bold ${config.textColor}`}
                 >
-                  {config.percentage}%
+                  {config.percentage.toFixed(1)}%
                 </motion.div>
-                <div className="text-xs text-slate-600">Risk Level</div>
+                <div className="text-xs text-slate-600">Confidence</div>
               </div>
             </div>
           </div>
@@ -166,7 +166,7 @@ export function RiskGauge({ riskLevel, confidence = 0, thresholds = { low: 0.33,
         {confidencePercent > 0 && (
           <div className="bg-white/70 p-3 rounded-lg border border-slate-200">
             <div className="flex justify-between items-center mb-2">
-              <span className="text-sm font-medium text-slate-700">AI Confidence</span>
+              <span className="text-sm font-medium text-slate-700">Analysis Confidence</span>
               <span className="text-sm font-bold text-indigo-600">{confidencePercent.toFixed(1)}%</span>
             </div>
             <div className="w-full bg-slate-200 rounded-full h-2">
