@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 import io
 from fastapi import UploadFile
+from typing import Dict, List, Any, Optional
 
 # Import TensorFlow and suppress warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'

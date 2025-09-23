@@ -134,6 +134,17 @@ def ensure_json_serializable(obj: Any) -> Any:
     else:
         return obj
 
+def get_risk_level(score: float) -> str:
+    """Convert probability score into categorical risk"""
+    if score is None:
+        return "unknown"
+    if score < 0.33:
+        return "low"
+    elif score < 0.66:
+        return "moderate"
+    else:
+        return "high"
+
 @app.get("/health", response_model=EnhancedHealthResponse)
 async def enhanced_health_check():
     """Enhanced health check with detailed model discovery status"""
@@ -277,7 +288,6 @@ async def structured_predict(
             try:
                 face_result = await face_manager.process_face_image(face_img)
                 
-                # Extract data for modality result
                 modality = ModalityResult(
                     type="face",
                     label=face_result.get("face_pred", "Analysis failed"),
@@ -290,23 +300,18 @@ async def structured_predict(
                 )
                 modalities.append(modality)
                 
-                # Store score for final fusion
                 face_score = face_result.get("ensemble_score")
                 
-                # Update debug info
                 debug_info["models_used"].extend(face_result.get("models_used", []))
                 if face_result.get("ensemble") and hasattr(face_result["ensemble"], "weights_used"):
                     debug_info["weights"]["face"] = face_result["ensemble"].weights_used
                 
-                # Check for male face warning
                 if face_result.get("gender", {}).get("label") == "male":
                     warnings.append("Male face detected - PCOS analysis may not be applicable")
                 
             except Exception as e:
                 logger.error(f"Face processing failed: {str(e)}")
                 warnings.append(f"Face analysis failed: {str(e)}")
-                
-                # Add failed modality
                 modality = ModalityResult(
                     type="face",
                     label="Analysis failed",
@@ -323,7 +328,6 @@ async def structured_predict(
             try:
                 xray_result = await xray_manager.process_xray_image(xray_img)
                 
-                # Extract data for modality result
                 modality = ModalityResult(
                     type="xray",
                     label=xray_result.get("xray_pred", "Analysis failed"),
@@ -339,15 +343,12 @@ async def structured_predict(
                 )
                 modalities.append(modality)
                 
-                # Store score for final fusion
                 xray_score = xray_result.get("ensemble_score")
                 
-                # Update debug info
                 debug_info["models_used"].extend(xray_result.get("models_used", []))
                 if xray_result.get("ensemble") and hasattr(xray_result["ensemble"], "weights_used"):
                     debug_info["weights"]["xray"] = xray_result["ensemble"].weights_used
                 
-                # Add ROI boxes to debug
                 if xray_result.get("per_roi"):
                     for roi in xray_result["per_roi"]:
                         debug_info["roi_boxes"].append({
@@ -359,8 +360,6 @@ async def structured_predict(
             except Exception as e:
                 logger.error(f"X-ray processing failed: {str(e)}")
                 warnings.append(f"X-ray analysis failed: {str(e)}")
-                
-                # Add failed modality
                 modality = ModalityResult(
                     type="xray",
                     label="Analysis failed",
@@ -370,7 +369,6 @@ async def structured_predict(
                 modalities.append(modality)
         
         # Generate final combined result
-        # Simple ensemble combination for final result
         if face_score is not None and xray_score is not None:
             combined_score = (face_score + xray_score) / 2
             combined_risk = get_risk_level(combined_score)
@@ -388,7 +386,6 @@ async def structured_predict(
             combined_risk = "unknown"
             explanation = "No analysis results available"
         
-        # Create final assessment
         final = FinalResult(
             risk=combined_risk,
             confidence=combined_score,
@@ -399,7 +396,6 @@ async def structured_predict(
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         logger.info(f"Structured prediction completed in {processing_time:.2f}ms")
         
-        # Ensure JSON serializable
         response_data = {
             "ok": True,
             "modalities": [ensure_json_serializable(m.dict()) for m in modalities],
@@ -432,14 +428,11 @@ async def legacy_predict(
 ):
     """Legacy prediction endpoint for backward compatibility"""
     try:
-        # Get structured response first
         structured_response = await structured_predict(face_img, xray_img)
         
-        # Convert to legacy format
         legacy_response = LegacyPredictionResponse(ok=structured_response.ok)
         
         if structured_response.ok:
-            # Extract face data
             face_modality = next((m for m in structured_response.modalities if m.type == "face"), None)
             if face_modality:
                 legacy_response.face_pred = face_modality.label
@@ -447,7 +440,6 @@ async def legacy_predict(
                 legacy_response.face_img = face_modality.original_img
                 legacy_response.face_risk = face_modality.risk
             
-            # Extract X-ray data
             xray_modality = next((m for m in structured_response.modalities if m.type == "xray"), None)
             if xray_modality:
                 legacy_response.xray_pred = xray_modality.label
@@ -456,12 +448,13 @@ async def legacy_predict(
                 legacy_response.found_labels = xray_modality.found_labels
                 legacy_response.xray_risk = xray_modality.risk
             
-            # Final results
             legacy_response.combined = structured_response.final.explanation
             legacy_response.overall_risk = structured_response.final.risk
             legacy_response.message = "ok"
         else:
-            # Handle error case
+            legacy_response.message = "error"
+            legacy_response.overall_risk = "unknown"
+            legacy_response.combined = "Analysis failed"
         
         return legacy_response
         
@@ -482,7 +475,6 @@ async def predict_file(
 ):
     """Single file upload endpoint with auto-detection"""
     try:
-        # Auto-detect type based on filename or content if needed
         if type == "auto":
             filename = file.filename.lower() if file.filename else ""
             if any(keyword in filename for keyword in ["face", "portrait", "selfie"]):
@@ -490,7 +482,6 @@ async def predict_file(
             elif any(keyword in filename for keyword in ["xray", "x-ray", "scan", "ultrasound"]):
                 type = "xray"
             else:
-                # Default to face for auto-detection
                 type = "face"
         
         if type == "face":
@@ -530,7 +521,6 @@ async def image_proxy(url: str = Query(..., description="Image URL to proxy")):
             response = await client.get(url, timeout=10.0)
             response.raise_for_status()
             
-            # Determine content type
             content_type = response.headers.get("content-type", "image/jpeg")
             
             return StreamingResponse(

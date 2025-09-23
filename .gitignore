@@ -6,12 +6,15 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-
 node_modules
 dist
 dist-ssr
 *.local
-
+__pycache__/
+managers/__pycache__/
+utils/__pycache__/
+*.pyc
+.DS_Store
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
