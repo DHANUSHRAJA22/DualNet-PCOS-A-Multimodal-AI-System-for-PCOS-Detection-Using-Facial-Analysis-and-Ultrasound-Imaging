@@ -26,9 +26,14 @@ from config import (
     get_available_face_models, load_model_labels, get_ensemble_weights, normalize_weights
 )
 from utils.validators import validate_image, get_safe_filename
-from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
+
+# Create a compiled prediction function to avoid retracing warnings
+@tf.function
+def compiled_predict(model, input_data):
+    """Compiled prediction function to avoid TensorFlow retracing warnings"""
+    return model(input_data, training=False)
 
 class FaceManager:
     """
@@ -44,7 +49,6 @@ class FaceManager:
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_predict_gender = False
         self.ensemble_weights = {}
-        self.ensemble_manager = EnsembleManager()
         
         # Model status tracking
         self.model_status = {
@@ -208,6 +212,17 @@ class FaceManager:
                         except Exception as final_e:
                             logger.error(f"All fallback methods failed for {model_path}: {str(final_e)}")
                             return None
+            else:
+                logger.error(f"Model loading failed for {model_path}: {str(e)}")
+                return None
+        except ValueError as e:
+            if "No model config found" in str(e):
+                logger.warning(f"Model {model_path} has no config, trying weights-only reconstruction...")
+                try:
+                    return self._reconstruct_from_weights_only(model_path, model_path.stem.lower())
+                except Exception as weights_e:
+                    logger.error(f"Weights-only reconstruction failed for {model_path}: {str(weights_e)}")
+                    return None
             else:
                 logger.error(f"Model loading failed for {model_path}: {str(e)}")
                 return None
@@ -434,6 +449,36 @@ class FaceManager:
                 include_top=False,
                 input_shape=(224, 224, 3)
             )
+        elif 'efficientnetb1' in model_name or 'efficientnet_b1' in model_name:
+            base_model = tf.keras.applications.EfficientNetB1(
+                weights=None,
+                include_top=False,
+                input_shape=(240, 240, 3)
+            )
+        elif 'efficientnetb2' in model_name or 'efficientnet_b2' in model_name:
+            base_model = tf.keras.applications.EfficientNetB2(
+                weights=None,
+                include_top=False,
+                input_shape=(260, 260, 3)
+            )
+        elif 'efficientnetb3' in model_name or 'efficientnet_b3' in model_name:
+            base_model = tf.keras.applications.EfficientNetB3(
+                weights=None,
+                include_top=False,
+                input_shape=(300, 300, 3)
+            )
+        elif 'mobilenet' in model_name:
+            base_model = tf.keras.applications.MobileNetV2(
+                weights=None,
+                include_top=False,
+                input_shape=(224, 224, 3)
+            )
+        elif 'densenet' in model_name:
+            base_model = tf.keras.applications.DenseNet121(
+                weights=None,
+                include_top=False,
+                input_shape=(224, 224, 3)
+            )
         else:
             # Generic CNN for unknown architectures
             base_model = tf.keras.Sequential([
@@ -538,7 +583,12 @@ class FaceManager:
             image_array = self._preprocess_image(image_bytes, settings.GENDER_IMAGE_SIZE)
             
             # Run prediction
-            prediction = self.gender_model.predict(image_array, verbose=0)
+            try:
+                prediction = compiled_predict(self.gender_model, image_array)
+                prediction = prediction.numpy()  # Convert to numpy if needed
+            except Exception:
+                # Fallback to regular predict if compiled version fails
+                prediction = self.gender_model.predict(image_array, verbose=0)
             
             # Extract probabilities (assuming binary classification)
             if prediction.shape[1] == 1:
@@ -596,7 +646,12 @@ class FaceManager:
                 image_array = self._preprocess_image(image_bytes, input_shape)
                 
                 # Run prediction with error handling
-                prediction = model.predict(image_array, verbose=0)
+                try:
+                    prediction = compiled_predict(model, image_array)
+                    prediction = prediction.numpy()  # Convert to numpy if needed
+                except Exception:
+                    # Fallback to regular predict if compiled version fails
+                    prediction = model.predict(image_array, verbose=0)
                 
                 # Extract PCOS probability (assuming binary classification)
                 if prediction.shape[1] == 1:
@@ -612,10 +667,12 @@ class FaceManager:
                 
             except Exception as e:
                 logger.error(f"PCOS prediction failed for {model_name}: {str(e)}")
+                self.loading_warnings.append(f"Face model {model_name} prediction failed: {str(e)}")
                 # Continue with other models
                 continue
         
         if not per_model_scores:
+            self.loading_warnings.append("No face PCOS models available for prediction")
             return {
                 "per_model": {},
                 "ensemble_score": 0.0,
@@ -700,7 +757,7 @@ class FaceManager:
                     result["face_pred"] = "No PCOS models available for analysis"
                     result["face_scores"] = []
                     result["face_risk"] = "unknown"
-                    result["warning"] = "No face PCOS models loaded"
+                    self.loading_warnings.append("No face PCOS models loaded")
                     return result
                 
                 pcos_results = await self.predict_pcos_ensemble(image_bytes)
@@ -733,7 +790,7 @@ class FaceManager:
                     result["face_pred"] = "No PCOS models available for analysis"
                     result["face_scores"] = []
                     result["face_risk"] = "unknown"
-                    result["warning"] = "No face PCOS models loaded"
+                    self.loading_warnings.append("No face PCOS models loaded")
             
             return result
             
