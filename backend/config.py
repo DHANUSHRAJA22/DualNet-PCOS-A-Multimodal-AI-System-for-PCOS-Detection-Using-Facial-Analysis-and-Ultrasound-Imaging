@@ -8,7 +8,6 @@ Supports ensemble inference with multiple models per modality.
 import os
 import glob
 from pathlib import Path
-from pydantic import BaseModel
 from typing import Dict, List, Optional
 
 # Base directories
@@ -20,12 +19,18 @@ YOLO_MODELS_DIR = MODELS_DIR / "yolo"
 STATIC_DIR = BASE_DIR / "static"
 UPLOADS_DIR = STATIC_DIR / "uploads"
 
-class Settings(BaseModel):
+# Ensure directories exist
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+FACE_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+XRAY_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+YOLO_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+class Settings:
     """Application settings with environment variable support"""
     
     # Server configuration
     HOST: str = os.getenv("HOST", "127.0.0.1")
-    PORT: int = int(os.getenv("PORT", "8000"))
+    PORT: int = int(os.getenv("PORT", "5000"))
     DEBUG: bool = os.getenv("DEBUG", "true").lower() == "true"
     
     # Ensemble configuration
@@ -34,15 +39,20 @@ class Settings(BaseModel):
     
     # CORS configuration
     ALLOWED_ORIGINS: List[str] = [
-        origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
-    ] if os.getenv("ALLOWED_ORIGINS") != "*" else ["*"]
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8080", 
+        "http://127.0.0.1:8080",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ]
     
     # File upload configuration
     MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "5"))
     ALLOWED_MIME_TYPES: List[str] = ["image/jpeg", "image/png", "image/webp"]
     STATIC_TTL_SECONDS: int = int(os.getenv("STATIC_TTL_SECONDS", "3600"))
     
-    # Model configuration - hardcoded exact filenames
+    # Model configuration - exact filenames
     GENDER_MODEL: str = "gender_classifier.h5"
     YOLO_MODEL: str = "bestv8.pt"
     
@@ -55,48 +65,76 @@ class Settings(BaseModel):
         "images.pexels.com",
         "images.unsplash.com",
         "picsum.photos",
-        "via.placeholder.com",
-        "localhost"
+        "via.placeholder.com"
     ]
 
 # Global settings instance
 settings = Settings()
 
-# Ensure directories exist
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-FACE_MODELS_DIR.mkdir(parents=True, exist_ok=True)
-XRAY_MODELS_DIR.mkdir(parents=True, exist_ok=True)
-YOLO_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+def get_available_face_models() -> Dict[str, Path]:
+    """
+    Auto-discover available face PCOS models using glob pattern
+    
+    Returns:
+        Dictionary mapping model names to file paths for available models
+    """
+    available = {}
+    
+    # Use glob to find all pcos_*.h5 files in face directory
+    pattern = str(FACE_MODELS_DIR / "pcos_*.h5")
+    for model_path in glob.glob(pattern):
+        model_path = Path(model_path)
+        if model_path.exists() and model_path.is_file():
+            # Extract model name from filename (remove pcos_ prefix and .h5 suffix)
+            model_name = model_path.stem.replace('pcos_', '')
+            available[model_name] = model_path
+    
+    return available
 
-# Hardcoded exact PCOS model filenames
-EXPECTED_FACE_MODELS = [
-    "pcos_vgg16.h5",
-    "pcos_resnet50.h5", 
-    "pcos_efficientnetb0.h5",
-    "pcos_efficientnetb1.h5",
-    "pcos_efficientnetb2.h5",
-    "pcos_efficientnetb3.h5"
-]
+def get_available_xray_models() -> Dict[str, Path]:
+    """
+    Auto-discover available X-ray PCOS models using glob pattern
+    
+    Returns:
+        Dictionary mapping model names to file paths for available models
+    """
+    available = {}
+    
+    # Use glob to find all pcos_*.h5 files in xray directory
+    pattern = str(XRAY_MODELS_DIR / "pcos_*.h5")
+    for model_path in glob.glob(pattern):
+        model_path = Path(model_path)
+        if model_path.exists() and model_path.is_file():
+            # Extract model name from filename (remove pcos_ prefix and .h5 suffix)
+            model_name = model_path.stem.replace('pcos_', '')
+            available[model_name] = model_path
+    
+    return available
 
-EXPECTED_XRAY_MODELS = [
-    "pcos_vgg16.h5",
-    "pcos_resnet50.h5",
-    "pcos_efficientnetb0.h5",
-    "pcos_detector_158.h5"
-]
-
-# Class labels
-FACE_LABELS = ["non_pcos", "pcos"]
-XRAY_LABELS = ["normal", "pcos"]
-
-# Model input sizes
-FACE_IMAGE_SIZE = (224, 224)
-XRAY_IMAGE_SIZE = (224, 224)
-XRAY_YOLO_SIZE = (640, 640)
-XRAY_VIT_SIZE = (224, 224)
-
-# Image processing
-IMAGE_QUALITY = 90
+def load_model_labels(model_path: Path) -> List[str]:
+    """
+    Load class labels for a model from corresponding .labels.txt file
+    
+    Args:
+        model_path: Path to the model file
+        
+    Returns:
+        List of class labels, defaults to ["non_pcos", "pcos"] if file not found
+    """
+    labels_path = model_path.with_suffix('.labels.txt')
+    
+    try:
+        if labels_path.exists():
+            with open(labels_path, 'r') as f:
+                import json
+                labels = json.load(f)
+                if isinstance(labels, list):
+                    return labels
+    except Exception:
+        pass
+    
+    # Default labels
+    return ["non_pcos", "pcos"]
 
 def get_risk_level(score: float) -> str:
     """Classify risk level based on probability score"""
@@ -107,62 +145,6 @@ def get_risk_level(score: float) -> str:
     else:
         return "high"
 
-def get_available_face_models() -> Dict[str, Path]:
-    """
-    Auto-discover available face PCOS models using exact hardcoded filenames
-    
-    Returns:
-        Dictionary mapping model names to file paths for available models
-    """
-    available = {}
-    
-    for filename in EXPECTED_FACE_MODELS:
-        model_path = FACE_MODELS_DIR / filename
-        if model_path.exists() and model_path.is_file():
-            # Use stem without 'pcos_' prefix as model name
-            model_name = model_path.stem.replace('pcos_', '')
-            available[model_name] = model_path
-    
-    return available
-
-def get_available_xray_models() -> Dict[str, Path]:
-    """
-    Auto-discover available X-ray PCOS models using exact hardcoded filenames
-    
-    Returns:
-        Dictionary mapping model names to file paths for available models
-    """
-    available = {}
-    
-    for filename in EXPECTED_XRAY_MODELS:
-        model_path = XRAY_MODELS_DIR / filename
-        if model_path.exists() and model_path.is_file():
-            # Use stem without 'pcos_' prefix as model name, handle special case
-            if filename == "pcos_detector_158.h5":
-                model_name = "detector_158"
-            else:
-                model_name = model_path.stem.replace('pcos_', '')
-            available[model_name] = model_path
-    
-    return available
-
-def get_model_labels(model_type: str) -> List[str]:
-    """
-    Get class labels for a model type
-    
-    Args:
-        model_type: Type of model ('face' or 'xray')
-        
-    Returns:
-        List of class labels
-    """
-    if model_type == 'face':
-        return FACE_LABELS
-    elif model_type == 'xray':
-        return XRAY_LABELS
-    else:
-        return ["class_0", "class_1"]
-
 def get_ensemble_weights(model_type: str) -> Dict[str, float]:
     """
     Get ensemble weights for a model type from environment variables or defaults
@@ -171,7 +153,7 @@ def get_ensemble_weights(model_type: str) -> Dict[str, float]:
         model_type: Type of model ('face' or 'xray')
     
     Returns:
-        Dictionary mapping model names to weights
+        Dictionary mapping model names to weights (defaults to 1.0 for each)
     """
     if model_type == 'face':
         available_models = get_available_face_models()
@@ -196,25 +178,20 @@ def get_ensemble_weights(model_type: str) -> Dict[str, float]:
     
     return weights
 
-def normalize_weights(weights: Dict[str, float], available_models: List[str]) -> Dict[str, float]:
+def normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
     """
-    Normalize weights for available models to sum to 1.0
+    Normalize weights to sum to 1.0
     
     Args:
         weights: Original weights dictionary
-        available_models: List of actually available model names
         
     Returns:
         Normalized weights dictionary
     """
-    # Filter weights for available models
-    available_weights = {name: weights.get(name, 1.0) for name in available_models}
-    
-    # Normalize to sum to 1.0
-    total_weight = sum(available_weights.values())
+    total_weight = sum(weights.values())
     if total_weight > 0:
-        return {name: weight / total_weight for name, weight in available_weights.items()}
+        return {name: weight / total_weight for name, weight in weights.items()}
     else:
         # Equal weights if no weights specified
-        equal_weight = 1.0 / len(available_models) if available_models else 0.0
-        return {name: equal_weight for name in available_models}
+        equal_weight = 1.0 / len(weights) if weights else 0.0
+        return {name: equal_weight for name in weights.keys()}
