@@ -119,9 +119,19 @@ def get_available_face_models() -> Dict[str, Path]:
     for model_path in glob.glob(pattern):
         model_path = Path(model_path)
         if model_path.exists() and model_path.is_file():
-            # Extract model name from filename (remove pcos_ prefix and .h5 suffix)
-            model_name = model_path.stem.replace('pcos_', '')
-            available[model_name] = model_path
+            try:
+                # Validate that the file is readable
+                with open(model_path, 'rb') as f:
+                    # Read first few bytes to check if it's a valid HDF5 file
+                    header = f.read(8)
+                    if header.startswith(b'\x89HDF'):
+                        # Extract model name from filename (remove pcos_ prefix and .h5 suffix)
+                        model_name = model_path.stem.replace('pcos_', '')
+                        available[model_name] = model_path
+                    else:
+                        logger.warning(f"Invalid HDF5 file detected: {model_path}")
+            except Exception as e:
+                logger.warning(f"Could not validate model file {model_path}: {str(e)}")
     
     return available
 
@@ -139,9 +149,19 @@ def get_available_xray_models() -> Dict[str, Path]:
     for model_path in glob.glob(pattern):
         model_path = Path(model_path)
         if model_path.exists() and model_path.is_file():
-            # Extract model name from filename (remove pcos_ prefix and .h5 suffix)
-            model_name = model_path.stem.replace('pcos_', '')
-            available[model_name] = model_path
+            try:
+                # Validate that the file is readable
+                with open(model_path, 'rb') as f:
+                    # Read first few bytes to check if it's a valid HDF5 file
+                    header = f.read(8)
+                    if header.startswith(b'\x89HDF'):
+                        # Extract model name from filename (remove pcos_ prefix and .h5 suffix)
+                        model_name = model_path.stem.replace('pcos_', '')
+                        available[model_name] = model_path
+                    else:
+                        logger.warning(f"Invalid HDF5 file detected: {model_path}")
+            except Exception as e:
+                logger.warning(f"Could not validate model file {model_path}: {str(e)}")
     
     return available
 

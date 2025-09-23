@@ -227,12 +227,24 @@ async def enhanced_health_check():
         else:
             overall_status = "healthy"
 
-        return EnhancedHealthResponse(
+        response_data = {
             status=overall_status,
             models=models_status,
             uptime_seconds=uptime,
             version="3.0.0",
-        )
+            # Add configuration info
+            "config": {
+                "fusion_mode": settings.FUSION_MODE,
+                "use_ensemble": settings.USE_ENSEMBLE,
+                "risk_thresholds": {
+                    "low": settings.RISK_LOW_THRESHOLD,
+                    "high": settings.RISK_HIGH_THRESHOLD
+                },
+                "max_upload_mb": settings.MAX_UPLOAD_MB
+            }
+        }
+        
+        return EnhancedHealthResponse(**response_data)
 
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
