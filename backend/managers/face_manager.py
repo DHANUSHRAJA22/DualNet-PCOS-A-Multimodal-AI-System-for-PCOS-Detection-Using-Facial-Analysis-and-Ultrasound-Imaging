@@ -43,7 +43,6 @@ class FaceManager:
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_predict_gender = False
         self.ensemble_weights = {}
-        self.ensemble_manager = EnsembleManager()
         
         # Model status tracking
         self.model_status = {
@@ -148,6 +147,8 @@ class FaceManager:
             for model_name, weight in normalized_weights.items():
                 if model_name in self.pcos_models:
                     self.pcos_models[model_name]["weight"] = weight
+            
+            logger.info(f"Normalized face model weights: {normalized_weights}")
         
         self.model_status["face"]["loaded"] = loaded_count > 0
         self.model_status["face"]["available"] = len(available_models) > 0
@@ -155,11 +156,12 @@ class FaceManager:
         if loaded_count > 0:
             logger.info(f"Successfully loaded {loaded_count} face PCOS models with normalized weights")
         else:
-            logger.warning("No face PCOS models could be loaded")
+            logger.warning("No face PCOS models could be loaded - face analysis will be unavailable")
+            self.model_status["face"]["error"] = "No models loaded successfully"
     
     def _load_model_with_fallback(self, model_path: Path):
         """
-        Load model with fallback for batch_shape compatibility issues
+        Load model with enhanced fallback for batch_shape and config issues
         
         Args:
             model_path: Path to model file
@@ -170,28 +172,95 @@ class FaceManager:
         try:
             # Try normal loading first
             model = tf.keras.models.load_model(str(model_path), compile=False)
+            logger.info(f"Successfully loaded model: {model_path}")
             return model
             
         except TypeError as e:
             if "batch_shape" in str(e) or "unrecognized keyword arguments" in str(e):
-                logger.warning(f"Model {model_path} has batch_shape issues, trying fallback...")
+                logger.warning(f"Model {model_path} has config issues, trying fallback methods...")
                 try:
-                    # Try loading without compilation and custom objects
+                    # Method 1: Try loading with custom objects cleared
                     model = tf.keras.models.load_model(
                         str(model_path), 
                         compile=False,
-                        custom_objects={}
+                        custom_objects={},
+                        safe_mode=False
                     )
+                    logger.info(f"Fallback method 1 successful for: {model_path}")
                     return model
                 except Exception as fallback_e:
-                    logger.error(f"Fallback loading failed for {model_path}: {str(fallback_e)}")
-                    return None
+                    logger.warning(f"Fallback method 1 failed for {model_path}: {str(fallback_e)}")
+                    
+                    # Method 2: Try to reconstruct from architecture
+                    try:
+                        return self._reconstruct_model_from_weights(model_path)
+                    except Exception as reconstruct_e:
+                        logger.error(f"All fallback methods failed for {model_path}: {str(reconstruct_e)}")
+                        return None
             else:
                 logger.error(f"Model loading failed for {model_path}: {str(e)}")
                 return None
                 
         except Exception as e:
             logger.error(f"Model loading failed for {model_path}: {str(e)}")
+            return None
+    
+    def _reconstruct_model_from_weights(self, model_path: Path):
+        """
+        Attempt to reconstruct model from architecture hints and weights
+        
+        Args:
+            model_path: Path to model file
+            
+        Returns:
+            Reconstructed model or None if failed
+        """
+        model_name = model_path.stem.lower()
+        
+        try:
+            # Detect architecture from filename
+            if 'vgg16' in model_name:
+                base_model = tf.keras.applications.VGG16(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(224, 224, 3)
+                )
+            elif 'resnet50' in model_name:
+                base_model = tf.keras.applications.ResNet50(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(224, 224, 3)
+                )
+            elif 'efficientnet' in model_name:
+                base_model = tf.keras.applications.EfficientNetB0(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(224, 224, 3)
+                )
+            else:
+                logger.warning(f"Unknown architecture for {model_name}, cannot reconstruct")
+                return None
+            
+            # Add classification head
+            model = tf.keras.Sequential([
+                base_model,
+                tf.keras.layers.GlobalAveragePooling2D(),
+                tf.keras.layers.Dense(128, activation='relu'),
+                tf.keras.layers.Dropout(0.5),
+                tf.keras.layers.Dense(2, activation='softmax')  # Binary classification
+            ])
+            
+            # Try to load weights only
+            try:
+                model.load_weights(str(model_path))
+                logger.info(f"Successfully reconstructed model from weights: {model_path}")
+                return model
+            except Exception as weights_e:
+                logger.error(f"Failed to load weights for reconstructed model {model_path}: {str(weights_e)}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Model reconstruction failed for {model_path}: {str(e)}")
             return None
     
     def _get_model_input_shape(self, model) -> Tuple[int, int]:
@@ -441,6 +510,7 @@ class FaceManager:
                     result["face_pred"] = "No PCOS models available for analysis"
                     result["face_scores"] = []
                     result["face_risk"] = "unknown"
+                    result["warning"] = "No face PCOS models loaded"
                     return result
                 
                 pcos_results = await self.predict_pcos_ensemble(image_bytes)
@@ -473,6 +543,7 @@ class FaceManager:
                     result["face_pred"] = "No PCOS models available for analysis"
                     result["face_scores"] = []
                     result["face_risk"] = "unknown"
+                    result["warning"] = "No face PCOS models loaded"
             
             return result
             
