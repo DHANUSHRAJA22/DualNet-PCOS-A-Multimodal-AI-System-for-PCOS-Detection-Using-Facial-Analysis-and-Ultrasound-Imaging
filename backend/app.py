@@ -301,8 +301,9 @@ async def structured_predict(
                 face_score = face_result.get("ensemble_score")
                 
                 debug_info["models_used"].extend(face_result.get("models_used", []))
-                if face_result.get("ensemble") and hasattr(face_result["ensemble"], "weights_used"):
-                    debug_info["weights"]["face"] = face_result["ensemble"].weights_used
+            
+            if face_result.get("ensemble") and hasattr(face_result["ensemble"], "weights_used"):
+                debug_info["weights"]["face"] = face_result["ensemble"].weights_used
                 
                 if face_result.get("gender", {}).get("label") == "male":
                     warnings.append("Male face detected - PCOS analysis may not be applicable")

@@ -31,10 +31,11 @@ except ImportError:
 
 from config import (
     settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR, get_risk_level,
-    get_available_xray_models, get_model_labels, get_ensemble_weights, normalize_weights,
+    get_available_xray_models, load_model_labels, get_ensemble_weights, normalize_weights,
     XRAY_IMAGE_SIZE
 )
 from utils.validators import validate_image, get_safe_filename
+from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class XrayManager:
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_detect_objects = False
         self.ensemble_weights = {}
+        self.ensemble_manager = EnsembleManager()
         
         # Model status tracking
         self.model_status = {
@@ -129,19 +131,25 @@ class XrayManager:
         # Load each available model
         for model_name, model_path in available_models.items():
             try:
-                # Load model
-                model = tf.keras.models.load_model(str(model_path), compile=False)
+                # Try loading with fallback for batch_shape issues
+                model = self._load_model_with_fallback(model_path)
                 
-                # Get weight for this model
-                weight = self.ensemble_weights.get(model_name, 1.0)
-                
-                self.pcos_models[model_name] = {
-                    "model": model,
-                    "path": str(model_path),
-                    "weight": weight
-                }
-                loaded_count += 1
-                logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight})")
+                if model is not None:
+                    weight = self.ensemble_weights.get(model_name, 1.0)
+                    labels = load_model_labels(model_path)
+                    
+                    # Detect input shape from model
+                    input_shape = self._get_model_input_shape(model)
+                    
+                    self.pcos_models[model_name] = {
+                        "model": model,
+                        "path": str(model_path),
+                        "weight": weight,
+                        "labels": labels,
+                        "input_shape": input_shape
+                    }
+                    loaded_count += 1
+                    logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight}, input_shape: {input_shape})")
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
@@ -150,7 +158,8 @@ class XrayManager:
         # Normalize weights for loaded models
         if self.pcos_models:
             model_names = list(self.pcos_models.keys())
-            normalized_weights = normalize_weights(self.ensemble_weights, model_names)
+            current_weights = {name: self.pcos_models[name]["weight"] for name in model_names}
+            normalized_weights = normalize_weights(current_weights, model_names)
             
             for model_name, weight in normalized_weights.items():
                 if model_name in self.pcos_models:
@@ -164,13 +173,72 @@ class XrayManager:
         else:
             logger.warning("No X-ray PCOS models could be loaded")
     
+    def _load_model_with_fallback(self, model_path: Path):
+        """
+        Load model with fallback for batch_shape compatibility issues
+        
+        Args:
+            model_path: Path to model file
+            
+        Returns:
+            Loaded model or None if failed
+        """
+        try:
+            # Try normal loading first
+            model = tf.keras.models.load_model(str(model_path), compile=False)
+            return model
+            
+        except TypeError as e:
+            if "batch_shape" in str(e) or "unrecognized keyword arguments" in str(e):
+                logger.warning(f"Model {model_path} has batch_shape issues, trying fallback...")
+                try:
+                    # Try loading without compilation and custom objects
+                    model = tf.keras.models.load_model(
+                        str(model_path), 
+                        compile=False,
+                        custom_objects={}
+                    )
+                    return model
+                except Exception as fallback_e:
+                    logger.error(f"Fallback loading failed for {model_path}: {str(fallback_e)}")
+                    return None
+            else:
+                logger.error(f"Model loading failed for {model_path}: {str(e)}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Model loading failed for {model_path}: {str(e)}")
+            return None
+    
+    def _get_model_input_shape(self, model) -> Tuple[int, int]:
+        """
+        Get input shape from loaded model
+        
+        Args:
+            model: Loaded TensorFlow model
+            
+        Returns:
+            Tuple of (height, width) for image preprocessing
+        """
+        try:
+            if hasattr(model, 'input_shape') and model.input_shape:
+                # Get (height, width) from model input shape
+                shape = model.input_shape
+                if len(shape) >= 3:
+                    return (shape[1], shape[2])  # (height, width)
+        except Exception:
+            pass
+        
+        # Default to standard size
+        return settings.XRAY_IMAGE_SIZE
+    
     def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = XRAY_IMAGE_SIZE) -> np.ndarray:
         """
         Preprocess image for model inference
         
         Args:
             image_bytes: Raw image bytes
-            target_size: Target size (width, height)
+            target_size: Target size (height, width)
             
         Returns:
             Preprocessed image array ready for model input
@@ -183,8 +251,9 @@ class XrayManager:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Resize with high-quality resampling
-            image = image.resize(target_size, Image.Resampling.LANCZOS)
+            # Resize with high-quality resampling (PIL expects width, height)
+            pil_size = (target_size[1], target_size[0])  # Convert to (width, height)
+            image = image.resize(pil_size, Image.Resampling.LANCZOS)
             
             # Convert to numpy array and normalize to [0,1]
             img_array = np.array(image, dtype=np.float32) / 255.0
@@ -220,7 +289,7 @@ class XrayManager:
             image = Image.open(io.BytesIO(image_bytes))
             
             # Run YOLO detection
-            results = self.yolo_model(image, verbose=False)
+            results = self.yolo_model.predict(image, verbose=False)
             
             # Extract detections
             for result in results:
@@ -269,7 +338,7 @@ class XrayManager:
                 "per_model": {},
                 "per_model_scores": {},
                 "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": get_model_labels('xray')
+                "labels": load_model_labels(Path("dummy"))
             }
         
         per_model_predictions = {}
@@ -288,9 +357,10 @@ class XrayManager:
             for model_name, model_data in self.pcos_models.items():
                 try:
                     model = model_data["model"]
+                    input_shape = model_data.get("input_shape", settings.XRAY_IMAGE_SIZE)
                     
                     # Preprocess ROI
-                    roi_array = self._preprocess_image(roi_bytes, XRAY_IMAGE_SIZE)
+                    roi_array = self._preprocess_image(roi_bytes, input_shape)
                     
                     # Run prediction
                     prediction = model.predict(roi_array, verbose=0)
@@ -323,7 +393,7 @@ class XrayManager:
                 "per_model": {},
                 "per_model_scores": {},
                 "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": get_model_labels('xray')
+                "labels": load_model_labels(Path("dummy"))
             }
         
         # Compute ensemble prediction
@@ -333,7 +403,7 @@ class XrayManager:
             "per_model": per_model_predictions,
             "per_model_scores": per_model_scores,
             "ensemble": ensemble_result,
-            "labels": get_model_labels('xray')
+            "labels": load_model_labels(Path("dummy"))
         }
     
     async def predict_pcos_ensemble_full_image(self, image_bytes: bytes) -> Dict[str, Any]:
@@ -351,7 +421,7 @@ class XrayManager:
                 "per_model": {},
                 "per_model_scores": {},
                 "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": get_model_labels('xray')
+                "labels": load_model_labels(Path("dummy"))
             }
         
         per_model_predictions = {}
@@ -360,9 +430,10 @@ class XrayManager:
         for model_name, model_data in self.pcos_models.items():
             try:
                 model = model_data["model"]
+                input_shape = model_data.get("input_shape", settings.XRAY_IMAGE_SIZE)
                 
                 # Preprocess full image
-                image_array = self._preprocess_image(image_bytes, XRAY_IMAGE_SIZE)
+                image_array = self._preprocess_image(image_bytes, input_shape)
                 
                 # Run prediction
                 prediction = model.predict(image_array, verbose=0)
@@ -392,7 +463,7 @@ class XrayManager:
                 "per_model": {},
                 "per_model_scores": {},
                 "ensemble": {"prob": 0.0, "label": "unknown", "weights": {}},
-                "labels": get_model_labels('xray')
+                "labels": load_model_labels(Path("dummy"))
             }
         
         # Compute ensemble prediction
@@ -402,8 +473,67 @@ class XrayManager:
             "per_model": per_model_predictions,
             "per_model_scores": per_model_scores,
             "ensemble": ensemble_result,
-            "labels": get_model_labels('xray')
+            "labels": load_model_labels(Path("dummy"))
         }
+    
+    def _load_model_with_fallback(self, model_path: Path):
+        """
+        Load model with fallback for batch_shape compatibility issues
+        
+        Args:
+            model_path: Path to model file
+            
+        Returns:
+            Loaded model or None if failed
+        """
+        try:
+            # Try normal loading first
+            model = tf.keras.models.load_model(str(model_path), compile=False)
+            return model
+            
+        except TypeError as e:
+            if "batch_shape" in str(e) or "unrecognized keyword arguments" in str(e):
+                logger.warning(f"Model {model_path} has batch_shape issues, trying fallback...")
+                try:
+                    # Try loading without compilation and custom objects
+                    model = tf.keras.models.load_model(
+                        str(model_path), 
+                        compile=False,
+                        custom_objects={}
+                    )
+                    return model
+                except Exception as fallback_e:
+                    logger.error(f"Fallback loading failed for {model_path}: {str(fallback_e)}")
+                    return None
+            else:
+                logger.error(f"Model loading failed for {model_path}: {str(e)}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Model loading failed for {model_path}: {str(e)}")
+            return None
+    
+    def _get_model_input_shape(self, model) -> Tuple[int, int]:
+        """
+        Get input shape from loaded model
+        
+        Args:
+            model: Loaded TensorFlow model
+            
+        Returns:
+            Tuple of (height, width) for image preprocessing
+        """
+        try:
+            if hasattr(model, 'input_shape') and model.input_shape:
+                # Get (height, width) from model input shape
+                shape = model.input_shape
+                if len(shape) >= 3:
+                    return (shape[1], shape[2])  # (height, width)
+        except Exception:
+            pass
+        
+        # Default to standard size
+        return settings.XRAY_IMAGE_SIZE
     
     def _compute_ensemble(self, per_model_predictions: Dict[str, List[float]]) -> Dict[str, Any]:
         """
@@ -443,7 +573,7 @@ class XrayManager:
         max_prob = ensemble_probs[max_prob_idx]
         
         # Use labels
-        labels = get_model_labels('xray')
+        labels = load_model_labels(Path("dummy"))
         predicted_label = labels[max_prob_idx] if max_prob_idx < len(labels) else "unknown"
         
         return {
@@ -616,7 +746,8 @@ class XrayManager:
             status["pcos_models"][model_name] = {
                 "loaded": True,
                 "path": model_data["path"],
-                "weight": model_data["weight"]
+                "weight": model_data["weight"],
+                "input_shape": model_data.get("input_shape")
             }
         
         return status

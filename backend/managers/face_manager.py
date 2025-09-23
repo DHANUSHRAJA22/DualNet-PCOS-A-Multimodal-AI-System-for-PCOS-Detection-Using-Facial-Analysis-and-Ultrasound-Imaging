@@ -23,10 +23,10 @@ import tensorflow as tf
 
 from config import (
     settings, FACE_MODELS_DIR, UPLOADS_DIR, get_risk_level,
-    get_available_face_models, get_model_labels, get_ensemble_weights, normalize_weights,
-    FACE_IMAGE_SIZE
+    get_available_face_models, load_model_labels, get_ensemble_weights, normalize_weights
 )
 from utils.validators import validate_image, get_safe_filename
+from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ class FaceManager:
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_predict_gender = False
         self.ensemble_weights = {}
+        self.ensemble_manager = EnsembleManager()
         
         # Model status tracking
         self.model_status = {
@@ -115,16 +116,25 @@ class FaceManager:
         # Load each available model
         for model_name, model_path in available_models.items():
             try:
-                model = tf.keras.models.load_model(str(model_path), compile=False)
-                weight = self.ensemble_weights.get(model_name, 1.0)
+                # Try loading with fallback for batch_shape issues
+                model = self._load_model_with_fallback(model_path)
                 
-                self.pcos_models[model_name] = {
-                    "model": model,
-                    "path": str(model_path),
-                    "weight": weight
-                }
-                loaded_count += 1
-                logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight})")
+                if model is not None:
+                    weight = self.ensemble_weights.get(model_name, 1.0)
+                    labels = load_model_labels(model_path)
+                    
+                    # Detect input shape from model
+                    input_shape = self._get_model_input_shape(model)
+                    
+                    self.pcos_models[model_name] = {
+                        "model": model,
+                        "path": str(model_path),
+                        "weight": weight,
+                        "labels": labels,
+                        "input_shape": input_shape
+                    }
+                    loaded_count += 1
+                    logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight}, input_shape: {input_shape})")
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
@@ -133,7 +143,8 @@ class FaceManager:
         # Normalize weights for loaded models
         if self.pcos_models:
             model_names = list(self.pcos_models.keys())
-            normalized_weights = normalize_weights(self.ensemble_weights, model_names)
+            current_weights = {name: self.pcos_models[name]["weight"] for name in model_names}
+            normalized_weights = normalize_weights(current_weights, model_names)
             
             for model_name, weight in normalized_weights.items():
                 if model_name in self.pcos_models:
@@ -147,13 +158,72 @@ class FaceManager:
         else:
             logger.warning("No face PCOS models could be loaded")
     
-    def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = FACE_IMAGE_SIZE) -> np.ndarray:
+    def _load_model_with_fallback(self, model_path: Path):
+        """
+        Load model with fallback for batch_shape compatibility issues
+        
+        Args:
+            model_path: Path to model file
+            
+        Returns:
+            Loaded model or None if failed
+        """
+        try:
+            # Try normal loading first
+            model = tf.keras.models.load_model(str(model_path), compile=False)
+            return model
+            
+        except TypeError as e:
+            if "batch_shape" in str(e) or "unrecognized keyword arguments" in str(e):
+                logger.warning(f"Model {model_path} has batch_shape issues, trying fallback...")
+                try:
+                    # Try loading without compilation and custom objects
+                    model = tf.keras.models.load_model(
+                        str(model_path), 
+                        compile=False,
+                        custom_objects={}
+                    )
+                    return model
+                except Exception as fallback_e:
+                    logger.error(f"Fallback loading failed for {model_path}: {str(fallback_e)}")
+                    return None
+            else:
+                logger.error(f"Model loading failed for {model_path}: {str(e)}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Model loading failed for {model_path}: {str(e)}")
+            return None
+    
+    def _get_model_input_shape(self, model) -> Tuple[int, int]:
+        """
+        Get input shape from loaded model
+        
+        Args:
+            model: Loaded TensorFlow model
+            
+        Returns:
+            Tuple of (height, width) for image preprocessing
+        """
+        try:
+            if hasattr(model, 'input_shape') and model.input_shape:
+                # Get (height, width) from model input shape
+                shape = model.input_shape
+                if len(shape) >= 3:
+                    return (shape[1], shape[2])  # (height, width)
+        except Exception:
+            pass
+        
+        # Default to standard size
+        return settings.FACE_IMAGE_SIZE
+    
+    def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
         """
         Preprocess image for model inference
         
         Args:
             image_bytes: Raw image bytes
-            target_size: Target size (width, height)
+            target_size: Target size (height, width)
             
         Returns:
             Preprocessed image array ready for model input
@@ -166,8 +236,9 @@ class FaceManager:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Resize with high-quality resampling
-            image = image.resize(target_size, Image.Resampling.LANCZOS)
+            # Resize with high-quality resampling (PIL expects width, height)
+            pil_size = (target_size[1], target_size[0])  # Convert to (width, height)
+            image = image.resize(pil_size, Image.Resampling.LANCZOS)
             
             # Convert to numpy array and normalize to [0,1]
             img_array = np.array(image, dtype=np.float32) / 255.0
@@ -199,8 +270,8 @@ class FaceManager:
             }
         
         try:
-            # Preprocess image for gender model
-            image_array = self._preprocess_image(image_bytes, FACE_IMAGE_SIZE)
+            # Use gender model specific input size (249x249)
+            image_array = self._preprocess_image(image_bytes, settings.GENDER_IMAGE_SIZE)
             
             # Run prediction
             prediction = self.gender_model.predict(image_array, verbose=0)
@@ -244,107 +315,77 @@ class FaceManager:
         if not self.pcos_models:
             return {
                 "per_model": {},
-                "per_model_scores": {},
-                "ensemble": {"prob": 0.0, "probs": [0.5, 0.5], "label": "unknown", "weights": {}},
-                "labels": get_model_labels('face')
+                "ensemble_score": 0.0,
+                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
+                "labels": ["non_pcos", "pcos"]
             }
         
-        per_model_predictions = {}
         per_model_scores = {}
+        successful_predictions = 0
         
         for model_name, model_data in self.pcos_models.items():
             try:
                 model = model_data["model"]
+                input_shape = model_data.get("input_shape", settings.FACE_IMAGE_SIZE)
                 
-                # Preprocess image
-                image_array = self._preprocess_image(image_bytes, FACE_IMAGE_SIZE)
+                # Preprocess image with correct size for this model
+                image_array = self._preprocess_image(image_bytes, input_shape)
                 
-                # Run prediction
+                # Run prediction with error handling
                 prediction = model.predict(image_array, verbose=0)
                 
                 # Extract PCOS probability (assuming binary classification)
                 if prediction.shape[1] == 1:
                     # Single output (sigmoid)
                     pcos_prob = float(prediction[0][0])
-                    probs = [1.0 - pcos_prob, pcos_prob]
                 else:
-                    # Two outputs (softmax)
-                    probs = [float(p) for p in prediction[0]]
-                    pcos_prob = probs[1]
+                    # Two outputs (softmax) - take second class (PCOS)
+                    pcos_prob = float(prediction[0][1])
                 
-                per_model_predictions[model_name] = probs
                 per_model_scores[model_name] = pcos_prob
+                successful_predictions += 1
                 logger.debug(f"Face {model_name} prediction: {pcos_prob:.3f}")
                 
             except Exception as e:
                 logger.error(f"PCOS prediction failed for {model_name}: {str(e)}")
-                # Don't include failed models in ensemble
+                # Continue with other models
                 continue
         
-        if not per_model_predictions:
+        if not per_model_scores:
             return {
                 "per_model": {},
-                "per_model_scores": {},
-                "ensemble": {"prob": 0.0, "probs": [0.5, 0.5], "label": "unknown", "weights": {}},
-                "labels": get_model_labels('face')
+                "ensemble_score": 0.0,
+                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
+                "labels": ["non_pcos", "pcos"]
             }
         
-        # Compute ensemble prediction
-        ensemble_result = self._compute_ensemble(per_model_predictions)
+        # Compute ensemble prediction using EnsembleManager
+        ensemble_result = self.ensemble_manager.combine_modalities(
+            face_score=None,  # Will be computed from per_model_scores
+            xray_score=None
+        )
+        
+        # Calculate weighted ensemble score
+        total_weight = 0.0
+        weighted_sum = 0.0
+        
+        for model_name, score in per_model_scores.items():
+            weight = self.pcos_models[model_name]["weight"]
+            weighted_sum += score * weight
+            total_weight += weight
+        
+        ensemble_score = weighted_sum / total_weight if total_weight > 0 else 0.0
         
         return {
-            "per_model": per_model_predictions,
-            "per_model_scores": per_model_scores,
-            "ensemble": ensemble_result,
-            "labels": get_model_labels('face')
-        }
-    
-    def _compute_ensemble(self, per_model_predictions: Dict[str, List[float]]) -> Dict[str, Any]:
-        """
-        Compute weighted ensemble prediction from per-model results
-        
-        Args:
-            per_model_predictions: Dictionary mapping model names to probability lists
-            
-        Returns:
-            Dictionary with ensemble results
-        """
-        if not per_model_predictions:
-            return {"prob": 0.0, "probs": [0.5, 0.5], "label": "unknown", "weights": {}}
-        
-        # Get weights for available models
-        available_models = list(per_model_predictions.keys())
-        weights = {name: self.pcos_models[name]["weight"] for name in available_models}
-        
-        # Compute weighted average for each class
-        num_classes = len(next(iter(per_model_predictions.values())))
-        ensemble_probs = [0.0] * num_classes
-        
-        total_weight = sum(weights.values())
-        if total_weight > 0:
-            for model_name, probs in per_model_predictions.items():
-                weight = weights[model_name]
-                for i, prob in enumerate(probs):
-                    ensemble_probs[i] += prob * weight / total_weight
-        else:
-            # Equal weighting fallback
-            for probs in per_model_predictions.values():
-                for i, prob in enumerate(probs):
-                    ensemble_probs[i] += prob / len(per_model_predictions)
-        
-        # Determine final prediction
-        max_prob_idx = np.argmax(ensemble_probs)
-        max_prob = ensemble_probs[max_prob_idx]
-        
-        labels = get_model_labels('face')
-        predicted_label = labels[max_prob_idx] if max_prob_idx < len(labels) else "unknown"
-        
-        return {
-            "prob": float(max_prob),
-            "probs": ensemble_probs,
-            "label": predicted_label,
-            "weights": weights,
-            "models_used": len(available_models)
+            "per_model": per_model_scores,
+            "ensemble_score": float(ensemble_score),
+            "ensemble": {
+                "method": "weighted_average",
+                "score": float(ensemble_score),
+                "models_used": successful_predictions,
+                "weights_used": {name: self.pcos_models[name]["weight"] for name in per_model_scores.keys()}
+            },
+            "labels": ["non_pcos", "pcos"]
         }
     
     async def process_face_image(self, file: UploadFile) -> Dict[str, Any]:
@@ -382,9 +423,9 @@ class FaceManager:
                 "face_scores": [],
                 "face_pred": None,
                 "face_risk": "unknown",
-                "face_models": {},
                 "per_model": {},
                 "ensemble_score": 0.0,
+                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
                 "models_used": []
             }
             
@@ -407,20 +448,19 @@ class FaceManager:
                 
                 if pcos_results["per_model"]:
                     # Store detailed results
-                    result["face_models"] = pcos_results["per_model"]
-                    result["per_model"] = pcos_results["per_model_scores"]
+                    result["per_model"] = pcos_results["per_model"]
                     result["models_used"] = list(pcos_results["per_model"].keys())
+                    result["ensemble"] = pcos_results["ensemble"]
                     
                     # Get ensemble results
-                    ensemble = pcos_results["ensemble"]
-                    ensemble_probs = ensemble["probs"]
-                    ensemble_score = ensemble["prob"]
-                    
-                    # Store ensemble results
-                    result["face_scores"] = ensemble_probs
+                    ensemble_score = pcos_results["ensemble_score"]
                     result["ensemble_score"] = ensemble_score
                     
-                    # Determine prediction label
+                    # Convert to face_scores format (non_pcos, pcos probabilities)
+                    non_pcos_prob = 1.0 - ensemble_score
+                    result["face_scores"] = [float(non_pcos_prob), float(ensemble_score)]
+                    
+                    # Determine prediction label and risk
                     risk_level = get_risk_level(ensemble_score)
                     result["face_risk"] = risk_level
                     
@@ -454,7 +494,8 @@ class FaceManager:
             status["pcos_models"][model_name] = {
                 "loaded": True,
                 "path": model_data["path"],
-                "weight": model_data["weight"]
+                "weight": model_data["weight"],
+                "input_shape": model_data.get("input_shape")
             }
         
         return status
