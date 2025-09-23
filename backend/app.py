@@ -228,10 +228,10 @@ async def enhanced_health_check():
             overall_status = "healthy"
 
         response_data = {
-            status=overall_status,
-            models=models_status,
-            uptime_seconds=uptime,
-            version="3.0.0",
+            "status": overall_status,
+            "models": models_status,
+            "uptime_seconds": uptime,
+            "version": "3.0.0",
             # Add configuration info
             "config": {
                 "fusion_mode": settings.FUSION_MODE,

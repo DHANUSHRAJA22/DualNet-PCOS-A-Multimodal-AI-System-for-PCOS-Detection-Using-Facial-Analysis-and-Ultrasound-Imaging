@@ -43,7 +43,7 @@ export function ConfidenceVisualization({ scores, prediction, analysisType, conf
         <CardHeader className="pb-4">
           <CardTitle className="flex items-center gap-2 text-lg">
             <Brain className="h-5 w-5 text-indigo-600" />
-            AI Confidence Analysis
+            Analysis Details
             <Badge className={`ml-auto bg-gradient-to-r ${confidenceInfo.color} text-white`}>
               {displayConfidence.toFixed(1)}% Confidence
             </Badge>
@@ -54,7 +54,7 @@ export function ConfidenceVisualization({ scores, prediction, analysisType, conf
           {/* Overall Confidence Gauge */}
           <div className="space-y-3">
             <div className="flex justify-between items-center">
-              <span className="font-medium text-slate-700">Overall Confidence</span>
+              <span className="font-medium text-slate-700">Analysis Confidence</span>
               <span className={`font-bold ${confidenceInfo.textColor}`}>
                 {confidenceInfo.level}
               </span>
