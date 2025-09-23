@@ -123,6 +123,7 @@ class XrayManager:
     def _load_pcos_models(self) -> None:
         """Load PCOS classification models with ensemble support"""
         loaded_count = 0
+        corrupted_models = []
         
         # Get available models using auto-discovery
         available_models = get_available_xray_models()
@@ -143,6 +144,12 @@ class XrayManager:
                 model = self._load_model_with_fallback(model_path)
                 
                 if model is not None:
+                    # Validate model by running a test prediction
+                    if not self._validate_model(model, model_path):
+                        logger.error(f"Model validation failed for {model_name}, marking as corrupted")
+                        corrupted_models.append(model_path)
+                        continue
+                    
                     weight = self.ensemble_weights.get(model_name, 1.0)
                     labels = load_model_labels(model_path)
                     
@@ -158,11 +165,18 @@ class XrayManager:
                     }
                     loaded_count += 1
                     logger.info(f"Loaded PCOS model {model_name}: {model_path} (weight: {weight}, input_shape: {input_shape})")
+                else:
+                    logger.error(f"Failed to load model {model_name}, marking as corrupted")
+                    corrupted_models.append(model_path)
                     
             except Exception as e:
                 logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
                 self.loading_warnings.append(f"X-ray model {model_name} failed to load: {str(e)}")
+                corrupted_models.append(model_path)
                 continue
+        
+        # Remove corrupted model files
+        self._remove_corrupted_models(corrupted_models)
         
         # Normalize weights for loaded models
         if self.pcos_models:
@@ -185,6 +199,62 @@ class XrayManager:
             logger.warning("No X-ray PCOS models could be loaded - X-ray analysis will be unavailable")
             self.model_status["xray"]["error"] = "No models loaded successfully"
             self.loading_warnings.append("No X-ray PCOS models could be loaded - imaging analysis unavailable")
+    
+    def _validate_model(self, model, model_path: Path) -> bool:
+        """
+        Validate model by running a test prediction
+        
+        Args:
+            model: Loaded TensorFlow model
+            model_path: Path to model file
+            
+        Returns:
+            True if model is valid, False if corrupted
+        """
+        try:
+            # Get input shape from model
+            input_shape = self._get_model_input_shape(model)
+            
+            # Create dummy input data
+            dummy_input = np.random.random((1, input_shape[0], input_shape[1], 3)).astype(np.float32)
+            
+            # Try to run prediction
+            prediction = model.predict(dummy_input, verbose=0)
+            
+            # Check if prediction has expected shape
+            if prediction is None or len(prediction.shape) != 2:
+                logger.error(f"Model {model_path} returned invalid prediction shape")
+                return False
+            
+            # Check if prediction contains valid probabilities
+            if np.any(np.isnan(prediction)) or np.any(np.isinf(prediction)):
+                logger.error(f"Model {model_path} returned NaN or Inf values")
+                return False
+            
+            logger.debug(f"Model validation successful for {model_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Model validation failed for {model_path}: {str(e)}")
+            return False
+    
+    def _remove_corrupted_models(self, corrupted_paths: List[Path]) -> None:
+        """
+        Remove corrupted model files
+        
+        Args:
+            corrupted_paths: List of paths to corrupted model files
+        """
+        for model_path in corrupted_paths:
+            try:
+                if model_path.exists():
+                    # Move to backup location instead of deleting
+                    backup_path = model_path.with_suffix('.corrupted')
+                    model_path.rename(backup_path)
+                    logger.info(f"Moved corrupted model to backup: {backup_path}")
+                    self.loading_warnings.append(f"Corrupted model moved to backup: {model_path.name}")
+            except Exception as e:
+                logger.error(f"Failed to move corrupted model {model_path}: {str(e)}")
     
     def _load_model_with_fallback(self, model_path: Path):
         """
@@ -244,10 +314,14 @@ class XrayManager:
             else:
                 logger.error(f"Model loading failed for {model_path}: {str(e)}")
                 return None
-                
         except Exception as e:
-            logger.error(f"Model loading failed for {model_path}: {str(e)}")
-            return None
+            # Check if file is corrupted
+            if "unable to open file" in str(e).lower() or "not an hdf5 file" in str(e).lower():
+                logger.error(f"Model file appears to be corrupted: {model_path}")
+                return None
+            else:
+                logger.error(f"Model loading failed for {model_path}: {str(e)}")
+                return None
     
     def _fix_batch_shape_and_load(self, model_path: Path):
         """
@@ -738,11 +812,6 @@ class XrayManager:
                 except Exception:
                     # Fallback to regular predict if compiled version fails
                     prediction = model.predict(image_array, verbose=0)
-                    prediction = compiled_predict(model, roi_array)
-                    prediction = prediction.numpy()  # Convert to numpy if needed
-                except Exception:
-                    # Fallback to regular predict if compiled version fails
-                    prediction = model.predict(roi_array, verbose=0)
                 
                 # Extract probabilities
                 if prediction.shape[1] == 1:
@@ -763,12 +832,10 @@ class XrayManager:
             except Exception as e:
                 logger.error(f"PCOS full image prediction failed for {model_name}: {str(e)}")
                 self.loading_warnings.append(f"X-ray model {model_name} full image prediction failed: {str(e)}")
-                self.loading_warnings.append(f"X-ray model {model_name} ROI prediction failed: {str(e)}")
                 continue
         
         if not per_model_predictions:
             self.loading_warnings.append("No X-ray PCOS models available for full image prediction")
-            self.loading_warnings.append("No X-ray PCOS models available for ROI prediction")
             return {
                 "per_model": {},
                 "per_model_scores": {},

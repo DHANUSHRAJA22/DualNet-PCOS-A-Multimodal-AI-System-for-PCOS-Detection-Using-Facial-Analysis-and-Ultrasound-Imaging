@@ -51,7 +51,7 @@ export function UploadArea({
       const processed = await fixImageOrientation(file)
       setProcessedImage(processed)
       onChange(processed)
-      toast.success('Image processed successfully')
+      toast.success(`${label} image processed successfully`)
     } catch (error) {
       toast.error('Failed to process image')
       console.error('Image processing error:', error)
