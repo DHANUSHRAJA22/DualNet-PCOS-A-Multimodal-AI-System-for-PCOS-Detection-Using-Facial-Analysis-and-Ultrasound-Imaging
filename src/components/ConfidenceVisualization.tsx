@@ -11,9 +11,10 @@ interface ConfidenceVisualizationProps {
   analysisType: 'face' | 'xray'
   confidence?: number // Optional overall confidence from final result
   ensemble?: EnsembleResult // Ensemble metadata
+  thresholds?: { low: number; high: number } // Backend risk thresholds
 }
 
-export function ConfidenceVisualization({ scores, prediction, analysisType, confidence, ensemble }: ConfidenceVisualizationProps) {
+export function ConfidenceVisualization({ scores, prediction, analysisType, confidence, ensemble, thresholds = { low: 0.33, high: 0.66 } }: ConfidenceVisualizationProps) {
   if (!scores || scores.length < 2) return null
 
   // Use provided confidence or calculate from scores
@@ -24,9 +25,9 @@ export function ConfidenceVisualization({ scores, prediction, analysisType, conf
   const pcosScore = scores[1] * 100
 
   const getConfidenceLevel = (conf: number) => {
-    if (conf >= 90) return { level: 'Very High', color: 'from-emerald-500 to-teal-500', textColor: 'text-emerald-700' }
-    if (conf >= 75) return { level: 'High', color: 'from-blue-500 to-indigo-500', textColor: 'text-blue-700' }
-    if (conf >= 60) return { level: 'Moderate', color: 'from-amber-500 to-orange-500', textColor: 'text-amber-700' }
+    if (conf >= (thresholds.high * 100) + 20) return { level: 'Very High', color: 'from-emerald-500 to-teal-500', textColor: 'text-emerald-700' }
+    if (conf >= thresholds.high * 100) return { level: 'High', color: 'from-blue-500 to-indigo-500', textColor: 'text-blue-700' }
+    if (conf >= thresholds.low * 100) return { level: 'Moderate', color: 'from-amber-500 to-orange-500', textColor: 'text-amber-700' }
     return { level: 'Low', color: 'from-slate-400 to-gray-500', textColor: 'text-slate-600' }
   }
 
@@ -118,6 +119,9 @@ export function ConfidenceVisualization({ scores, prediction, analysisType, conf
                 <div className="flex justify-between">
                   <span className="text-slate-600">Final Score:</span>
                   <span className="font-medium">{(ensemble.score * 100).toFixed(1)}%</span>
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  Risk Bands: Low &lt; {(thresholds.low * 100).toFixed(0)}%, High ≥ {(thresholds.high * 100).toFixed(0)}%
                 </div>
                 {ensemble.weights_used && (
                   <div className="col-span-2">

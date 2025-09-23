@@ -46,13 +46,28 @@ export function IndexPage() {
   const [xrayImage, setXrayImage] = useState<ProcessedImage | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [backendStatus, setBackendStatus] = useState<HealthStatus>('unreachable')
+  const [healthDetails, setHealthDetails] = useState<any>(null)
   const [showDiagnostics, setShowDiagnostics] = useState(false)
 
   const hasImages = Boolean(faceImage || xrayImage)
 
   useEffect(() => {
     // Initial health check
-    pingHealth().then(setBackendStatus)
+    const checkHealth = async () => {
+      const status = await pingHealth()
+      setBackendStatus(status)
+      
+      if (status === 'online') {
+        try {
+          const details = await getEnhancedHealth()
+          setHealthDetails(details)
+        } catch (error) {
+          console.warn('Could not fetch health details:', error)
+        }
+      }
+    }
+    
+    checkHealth()
   }, [])
 
   const showDiagnosticsDialog = () => {
@@ -137,12 +152,8 @@ export function IndexPage() {
 
       const results = await postPredict(formData, true) // Use structured format
       
-      // Convert to legacy format for existing Results page
-      const legacyResults = isStructuredResponse(results) 
-        ? convertToLegacyFormat(results)
-        : results
-      
-      navigate('/results', { state: { results: results } })
+      // Pass structured results directly to Results page
+      navigate('/results', { state: { results: results, healthDetails: healthDetails } })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Analysis failed'
       

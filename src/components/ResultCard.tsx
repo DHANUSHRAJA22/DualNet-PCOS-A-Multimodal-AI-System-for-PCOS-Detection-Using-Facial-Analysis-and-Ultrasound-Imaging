@@ -16,6 +16,7 @@ interface ResultCardProps {
   foundLabels?: string[]
   riskLevel: 'low' | 'moderate' | 'high' | 'unknown'
   confidence?: number // Overall confidence from final result
+  thresholds?: { low: number; high: number } // Backend risk thresholds
   modality?: ModalityResult // Full modality data for enhanced display
   className?: string
 }
@@ -55,6 +56,7 @@ export function ResultCard({
   foundLabels,
   riskLevel,
   confidence,
+  thresholds = { low: 0.33, high: 0.66 },
   modality,
   className,
 }: ResultCardProps) {
@@ -114,6 +116,7 @@ export function ResultCard({
             analysisType={title.toLowerCase().includes('face') ? 'face' : 'xray'}
             confidence={modality?.ensemble?.score || confidence}
             ensemble={modality?.ensemble}
+            thresholds={thresholds}
           />
 
           {/* Per-Model Scores Display */}

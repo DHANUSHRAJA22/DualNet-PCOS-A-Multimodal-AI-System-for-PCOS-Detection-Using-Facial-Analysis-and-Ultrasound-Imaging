@@ -191,6 +191,7 @@ export function ResultsPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const results = location.state?.results as StructuredPredictionResponse | LegacyPredictionResponse
+  const healthDetails = location.state?.healthDetails
 
   if (!results) {
     return (
@@ -223,6 +224,12 @@ export function ResultsPage() {
   let processingTime: number = 0
   let debugInfo: any = {}
   let fusionMode: string = 'threshold'
+  let backendThresholds = { low: 0.33, high: 0.66 }
+  
+  // Extract thresholds from health details if available
+  if (healthDetails?.config?.risk_thresholds) {
+    backendThresholds = healthDetails.config.risk_thresholds
+  }
 
   if (isStructuredResponse(results)) {
     // New structured format
@@ -234,8 +241,8 @@ export function ResultsPage() {
     processingTime = results.processing_time_ms
     debugInfo = results.debug
   } else {
-    // Legacy format
-    overallRisk = (results.overall_risk as RiskLevel) || getRiskLevel(results.combined)
+    // Legacy format - use backend risk if available, otherwise derive
+    overallRisk = (results.overall_risk as RiskLevel) || 'unknown'
     // Calculate confidence from available scores
     let maxScore = 0.5
     if (results.face_scores && results.face_scores.length > 0) {
@@ -268,8 +275,16 @@ export function ResultsPage() {
     }
   }
 
-  const faceSummary = getAnalysisSummary(modalities.find(m => m.type === 'face')?.label)
-  const xraySummary = getAnalysisSummary(modalities.find(m => m.type === 'xray')?.label)
+  // Check if X-ray models are available from health details
+  const hasXrayModels = healthDetails?.models ? 
+    Object.keys(healthDetails.models).some(key => key.includes('xray') && healthDetails.models[key].lazy_loadable) :
+    true // Default to true if health details not available
+  
+  const faceModality = modalities.find(m => m.type === 'face')
+  const xrayModality = modalities.find(m => m.type === 'xray')
+  
+  const faceSummary = getAnalysisSummary(faceModality?.label)
+  const xraySummary = getAnalysisSummary(xrayModality?.label)
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50">
@@ -387,17 +402,38 @@ export function ResultsPage() {
               <RiskGauge 
                 riskLevel={overallRisk} 
                 confidence={overallConfidence}
+                thresholds={backendThresholds}
                 className="max-w-sm"
               />
             </div>
           </Reveal>
 
+          {/* X-ray Models Unavailable Warning */}
+          {!hasXrayModels && (
+            <Reveal delay={0.15}>
+              <div className="bg-amber-50 border-2 border-amber-200 rounded-lg p-6">
+                <div className="flex items-center gap-3">
+                  <AlertTriangle className="h-6 w-6 text-amber-600" />
+                  <div>
+                    <h3 className="font-semibold text-amber-900">X-ray Analysis Unavailable</h3>
+                    <p className="text-sm text-amber-800 mt-1">
+                      No X-ray models are currently loaded. Only facial analysis is available.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </Reveal>
+          )}
+
           {/* Detailed Results */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {modalities.map((modality, index) => (
-              <Reveal delay={0.1}>
+            {modalities.filter(modality => {
+              // Filter out X-ray modality if no X-ray models available
+              if (modality.type === 'xray' && !hasXrayModels) return false
+              return true
+            }).map((modality, index) => (
+              <Reveal key={modality.type} delay={0.1 + index * 0.05}>
                 <ResultCard
-                  key={modality.type}
                   title={modality.type === 'face' ? 'Facial Analysis' : 'X-ray Analysis'}
                   prediction={modality.label}
                   scores={modality.scores}
@@ -406,6 +442,7 @@ export function ResultsPage() {
                   foundLabels={modality.found_labels}
                   riskLevel={modality.risk as RiskLevel}
                   confidence={overallConfidence}
+                  thresholds={backendThresholds}
                   modality={modality}
                 />
               </Reveal>
@@ -414,8 +451,12 @@ export function ResultsPage() {
 
           {/* Per-Model and ROI Breakdowns */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {modalities.map((modality, index) => (
-              <Reveal key={modality.type} delay={0.3 + index * 0.1}>
+            {modalities.filter(modality => {
+              // Filter out X-ray modality if no X-ray models available
+              if (modality.type === 'xray' && !hasXrayModels) return false
+              return true
+            }).map((modality, index) => (
+              <Reveal key={modality.type} delay={0.25 + index * 0.1}>
                 <div className="space-y-4">
                   <PerModelBreakdown modality={modality} />
                   {modality.type === 'xray' && modality.per_roi && (
@@ -425,6 +466,61 @@ export function ResultsPage() {
               </Reveal>
             ))}
           </div>
+
+          {/* Backend Health & Configuration */}
+          {healthDetails && (
+            <Reveal delay={0.4}>
+              <Card className="border-slate-200 bg-slate-50">
+                <CardHeader>
+                  <CardTitle className="text-lg text-slate-700 flex items-center gap-2">
+                    <Activity className="h-5 w-5" />
+                    Backend Configuration
+                    <Badge variant="outline" className="text-xs">
+                      v{healthDetails.version} • {Math.round(healthDetails.uptime_seconds)}s uptime
+                    </Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <h4 className="font-medium text-sm mb-2">Risk Thresholds:</h4>
+                      <div className="space-y-1 text-xs">
+                        <div className="flex justify-between">
+                          <span>Low Risk:</span>
+                          <span className="font-mono">< {(backendThresholds.low * 100).toFixed(0)}%</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Moderate Risk:</span>
+                          <span className="font-mono">{(backendThresholds.low * 100).toFixed(0)}% - {(backendThresholds.high * 100).toFixed(0)}%</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>High Risk:</span>
+                          <span className="font-mono">≥ {(backendThresholds.high * 100).toFixed(0)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <h4 className="font-medium text-sm mb-2">Model Status:</h4>
+                      <div className="space-y-1 text-xs">
+                        {Object.entries(healthDetails.models || {}).map(([modelName, status]: [string, any]) => (
+                          <div key={modelName} className="flex justify-between">
+                            <span className="capitalize">{modelName.replace('_', ' ')}</span>
+                            <Badge 
+                              variant={status.lazy_loadable ? "default" : "destructive"}
+                              className="text-xs h-4"
+                            >
+                              {status.lazy_loadable ? "Available" : "Missing"}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </Reveal>
+          )}
 
           {/* Ensemble Configuration Display */}
           {debugInfo && Object.keys(debugInfo).length > 0 && (

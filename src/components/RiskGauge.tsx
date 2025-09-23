@@ -6,11 +6,36 @@ import { Badge } from '@/components/ui/badge'
 interface RiskGaugeProps {
   riskLevel: 'low' | 'moderate' | 'high' | 'unknown'
   confidence?: number // Should be 0-1, will be converted to percentage
+  thresholds?: { low: number; high: number } // Backend risk thresholds
   className?: string
 }
 
-export function RiskGauge({ riskLevel, confidence = 0, className }: RiskGaugeProps) {
+export function RiskGauge({ riskLevel, confidence = 0, thresholds = { low: 0.33, high: 0.66 }, className }: RiskGaugeProps) {
+  // Convert confidence to percentage if needed
+  const confidencePercent = confidence > 1 ? confidence : confidence * 100
+  
+  // Calculate gauge percentage based on risk level and actual confidence
   const getRiskConfig = () => {
+    // Use actual confidence score to determine gauge fill
+    let percentage = confidencePercent
+    
+    // If confidence is very low, use minimum values based on risk level
+    if (confidencePercent < 10) {
+      switch (riskLevel) {
+        case 'low':
+          percentage = (thresholds.low * 100) / 2 // Half of low threshold
+          break
+        case 'moderate':
+          percentage = ((thresholds.low + thresholds.high) / 2) * 100 // Middle of moderate range
+          break
+        case 'high':
+          percentage = (thresholds.high * 100) + ((100 - thresholds.high * 100) / 2) // Middle of high range
+          break
+        default:
+          percentage = 0
+      }
+    }
+    
     switch (riskLevel) {
       case 'low':
         return {
@@ -20,7 +45,7 @@ export function RiskGauge({ riskLevel, confidence = 0, className }: RiskGaugePro
           bgColor: 'from-emerald-50 to-teal-50',
           borderColor: 'border-emerald-200',
           textColor: 'text-emerald-700',
-          percentage: 25,
+          percentage: Math.min(percentage, thresholds.low * 100),
           description: 'Analysis shows minimal risk indicators'
         }
       case 'moderate':
@@ -31,7 +56,7 @@ export function RiskGauge({ riskLevel, confidence = 0, className }: RiskGaugePro
           bgColor: 'from-amber-50 to-orange-50',
           borderColor: 'border-amber-200',
           textColor: 'text-amber-700',
-          percentage: 60,
+          percentage: Math.max(thresholds.low * 100, Math.min(percentage, thresholds.high * 100)),
           description: 'Some indicators warrant further evaluation'
         }
       case 'high':
@@ -42,7 +67,7 @@ export function RiskGauge({ riskLevel, confidence = 0, className }: RiskGaugePro
           bgColor: 'from-rose-50 to-red-50',
           borderColor: 'border-rose-200',
           textColor: 'text-rose-700',
-          percentage: 85,
+          percentage: Math.max(thresholds.high * 100, percentage),
           description: 'Multiple risk indicators detected'
         }
       default:
@@ -138,19 +163,22 @@ export function RiskGauge({ riskLevel, confidence = 0, className }: RiskGaugePro
         </div>
 
         {/* Confidence Indicator */}
-        {confidence > 0 && (
+        {confidencePercent > 0 && (
           <div className="bg-white/70 p-3 rounded-lg border border-slate-200">
             <div className="flex justify-between items-center mb-2">
               <span className="text-sm font-medium text-slate-700">AI Confidence</span>
-              <span className="text-sm font-bold text-indigo-600">{(confidence * 100).toFixed(1)}%</span>
+              <span className="text-sm font-bold text-indigo-600">{confidencePercent.toFixed(1)}%</span>
             </div>
             <div className="w-full bg-slate-200 rounded-full h-2">
               <motion.div
                 className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2 rounded-full"
                 initial={{ width: 0 }}
-                animate={{ width: `${confidence * 100}%` }}
+                animate={{ width: `${confidencePercent}%` }}
                 transition={{ duration: 1, delay: 0.5 }}
               />
+            </div>
+            <div className="mt-2 text-xs text-slate-600">
+              Thresholds: Low &lt; {(thresholds.low * 100).toFixed(0)}%, High ≥ {(thresholds.high * 100).toFixed(0)}%
             </div>
           </div>
         )}
