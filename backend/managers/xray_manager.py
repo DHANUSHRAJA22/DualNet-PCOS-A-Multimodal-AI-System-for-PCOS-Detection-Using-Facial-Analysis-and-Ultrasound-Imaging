@@ -36,9 +36,14 @@ from config import (
     XRAY_IMAGE_SIZE
 )
 from utils.validators import validate_image, get_safe_filename
-from ensemble import EnsembleManager
 
 logger = logging.getLogger(__name__)
+
+# Create a compiled prediction function to avoid retracing warnings
+@tf.function
+def compiled_predict(model, input_data):
+    """Compiled prediction function to avoid TensorFlow retracing warnings"""
+    return model(input_data, training=False)
 
 class XrayManager:
     """
@@ -54,7 +59,6 @@ class XrayManager:
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_detect_objects = False
         self.ensemble_weights = {}
-        self.ensemble_manager = EnsembleManager()
         
         # Model status tracking
         self.model_status = {
@@ -226,6 +230,17 @@ class XrayManager:
                         except Exception as final_e:
                             logger.error(f"All fallback methods failed for {model_path}: {str(final_e)}")
                             return None
+            else:
+                logger.error(f"Model loading failed for {model_path}: {str(e)}")
+                return None
+        except ValueError as e:
+            if "No model config found" in str(e):
+                logger.warning(f"Model {model_path} has no config, trying weights-only reconstruction...")
+                try:
+                    return self._reconstruct_from_weights_only(model_path, model_path.stem.lower())
+                except Exception as weights_e:
+                    logger.error(f"Weights-only reconstruction failed for {model_path}: {str(weights_e)}")
+                    return None
             else:
                 logger.error(f"Model loading failed for {model_path}: {str(e)}")
                 return None
@@ -717,7 +732,17 @@ class XrayManager:
                 image_array = self._preprocess_image(image_bytes, input_shape)
                 
                 # Run prediction
-                prediction = model.predict(image_array, verbose=0)
+                try:
+                    prediction = compiled_predict(model, image_array)
+                    prediction = prediction.numpy()  # Convert to numpy if needed
+                except Exception:
+                    # Fallback to regular predict if compiled version fails
+                    prediction = model.predict(image_array, verbose=0)
+                    prediction = compiled_predict(model, roi_array)
+                    prediction = prediction.numpy()  # Convert to numpy if needed
+                except Exception:
+                    # Fallback to regular predict if compiled version fails
+                    prediction = model.predict(roi_array, verbose=0)
                 
                 # Extract probabilities
                 if prediction.shape[1] == 1:
@@ -737,9 +762,13 @@ class XrayManager:
                 
             except Exception as e:
                 logger.error(f"PCOS full image prediction failed for {model_name}: {str(e)}")
+                self.loading_warnings.append(f"X-ray model {model_name} full image prediction failed: {str(e)}")
+                self.loading_warnings.append(f"X-ray model {model_name} ROI prediction failed: {str(e)}")
                 continue
         
         if not per_model_predictions:
+            self.loading_warnings.append("No X-ray PCOS models available for full image prediction")
+            self.loading_warnings.append("No X-ray PCOS models available for ROI prediction")
             return {
                 "per_model": {},
                 "per_model_scores": {},
@@ -915,7 +944,7 @@ class XrayManager:
             if not self.pcos_models:
                 result["xray_pred"] = "No PCOS models available for analysis"
                 result["xray_risk"] = "unknown"
-                result["warning"] = "No X-ray PCOS models loaded"
+                self.loading_warnings.append("No X-ray PCOS models loaded")
                 return result
             
             # Process ROIs if detections found
@@ -979,6 +1008,7 @@ class XrayManager:
                         result["xray_pred"] = "No PCOS symptoms detected in X-ray"
                 else:
                     result["xray_pred"] = "No valid ROI predictions available"
+                    self.loading_warnings.append("No valid ROI predictions available")
             
             else:
                 # No detections - classify full image
@@ -1008,6 +1038,7 @@ class XrayManager:
                         result["xray_pred"] = "No PCOS symptoms detected in X-ray"
                 else:
                     result["xray_pred"] = "No PCOS models available for analysis"
+                    self.loading_warnings.append("No PCOS models available for full image analysis")
             
             return result
             
