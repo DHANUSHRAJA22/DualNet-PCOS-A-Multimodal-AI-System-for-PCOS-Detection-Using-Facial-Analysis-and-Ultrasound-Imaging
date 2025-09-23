@@ -237,7 +237,15 @@ export async function getEnhancedHealth(): Promise<EnhancedHealthResponse> {
 
 // Helper function to check if response is structured format
 export function isStructuredResponse(response: PredictionResponse): response is StructuredPredictionResponse {
-  return 'modalities' in response && 'final' in response
+  return (
+    typeof response === 'object' &&
+    response !== null &&
+    'modalities' in response &&
+    'final' in response &&
+    Array.isArray((response as any).modalities) &&
+    typeof (response as any).final === 'object' &&
+    typeof response.ok === 'boolean'
+  )
 }
 
 // Helper function to convert structured to legacy format
