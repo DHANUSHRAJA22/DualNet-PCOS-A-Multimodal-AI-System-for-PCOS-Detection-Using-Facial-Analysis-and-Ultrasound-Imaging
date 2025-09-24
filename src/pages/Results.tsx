@@ -19,9 +19,6 @@ export function Results() {
   const rawResults = location.state?.results;
   const healthDetails = location.state?.healthDetails as EnhancedHealthResponse;
   
-  // Extract final confidence from results
-  const finalConfidence = rawResults?.final?.confidence || 0;
-
   if (!rawResults) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
