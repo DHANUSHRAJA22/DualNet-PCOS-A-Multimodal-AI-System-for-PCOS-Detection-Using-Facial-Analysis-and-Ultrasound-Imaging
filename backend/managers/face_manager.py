@@ -838,6 +838,8 @@ class FaceManager:
                 "per_model": {},
                 "ensemble_score": 0.0,
                 "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
+                "labels": ["non_pcos", "pcos"]
+            }
         # Calculate weighted ensemble score
         total_weight = 0.0
         weighted_sum = 0.0
