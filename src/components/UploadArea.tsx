@@ -104,10 +104,6 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
     processFile(file);
     setCameraOpen(false);
   }, [processFile]);
-  const handleCameraCapture = useCallback((file: File) => {
-    processFile(file);
-    setCameraOpen(false);
-  }, [processFile]);
 
   const clearUpload = useCallback(() => {
     setProcessedImage(null);

@@ -116,7 +116,6 @@ export function Results() {
 
   // Extract risk and confidence from structured response
   const finalRisk = results.final.risk;
-  const finalConfidence = results.final.confidence;
   const explanation = results.final.explanation;
   const processingTime = results.processing_time_ms;
   
