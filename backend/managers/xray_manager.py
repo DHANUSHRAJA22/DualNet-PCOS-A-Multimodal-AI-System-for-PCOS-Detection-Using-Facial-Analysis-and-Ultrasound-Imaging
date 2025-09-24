@@ -10,6 +10,8 @@ import uuid
 import logging
 import json
 import h5py
+import json
+import h5py
 from typing import Dict, Optional, Any, Tuple, List
 from pathlib import Path
 import numpy as np
@@ -17,14 +19,58 @@ from PIL import Image
 import io
 from fastapi import UploadFile
 import tensorflow as tf
+from tensorflow.keras.models import load_model, model_from_json
 
 from config import (
     settings, XRAY_MODELS_DIR, YOLO_MODELS_DIR, UPLOADS_DIR, get_risk_level,
     get_available_xray_models, load_model_labels, get_ensemble_weights, normalize_weights
 )
+from config_runtime import XRAY_COMPILE, XRAY_ALLOW_FALLBACK
+from ensemble import robust_weighted_ensemble
 from utils.validators import validate_image, get_safe_filename
 
 logger = logging.getLogger(__name__)
+
+def _safe_load_h5(path, compile_model=False):
+    """
+    Robust H5 model loader with fallbacks for batch_shape and config issues
+    
+    Args:
+        path: Path to .h5 model file
+        compile_model: Whether to compile the model
+        
+    Returns:
+        Loaded model or None if all methods fail
+    """
+    try:
+        return load_model(path, compile=compile_model)
+    except Exception as e1:
+        logger.warning(f"[xray] load_model failed for {path}: {e1}")
+        
+        # Try reading model_config from H5 attrs
+        try:
+            with h5py.File(path, "r") as f:
+                if "model_config" in f.attrs:
+                    cfg = f.attrs["model_config"].decode("utf-8")
+                    try:
+                        model = model_from_json(cfg)
+                        model.load_weights(path, by_name=True, skip_mismatch=True)
+                        logger.info(f"[xray] Successfully loaded via model_from_json: {path}")
+                        return model
+                    except Exception as e2:
+                        logger.warning(f"[xray] model_from_json fallback failed: {e2}")
+        except Exception as e3:
+            logger.warning(f"[xray] h5py open failed: {e3}")
+        
+        # Final fallback: try with custom objects
+        try:
+            custom_objects = {"GlorotUniform": tf.keras.initializers.glorot_uniform()}
+            model = load_model(path, compile=compile_model, custom_objects=custom_objects)
+            logger.info(f"[xray] Successfully loaded with custom_objects: {path}")
+            return model
+        except Exception as e4:
+            logger.error(f"[xray] All load fallbacks failed for {path}: {e4}")
+            return None
 
 # Compiled prediction function to avoid retracing
 @tf.function(reduce_retracing=True)
@@ -143,6 +189,7 @@ class XrayManager:
         self.yolo_model = None
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_detect_objects = False
+        self.models_unavailable = []  # Track failed models
         self.ensemble_weights = {}
         
         # Model status tracking
@@ -222,27 +269,18 @@ class XrayManager:
             try:
                 logger.info(f"Attempting to load X-ray model: {model_name} from {model_path}")
                 
-                # Try normal model loading first
-                model = None
-                try:
-                    model = tf.keras.models.load_model(str(model_path), compile=False)
-                    logger.info(f"✅ Successfully loaded X-ray model {model_name} normally")
-                except Exception as load_error:
-                    logger.warning(f"Normal loading failed for {model_name}: {str(load_error)}")
-                    
-                    # Check if it's the batch_shape error
-                    if "batch_shape" in str(load_error) or "Unrecognized keyword arguments" in str(load_error):
-                        logger.info(f"Attempting fallback reconstruction for {model_name}")
-                        model = self._reconstruct_xray_model(model_path, model_name)
-                    else:
-                        logger.error(f"Non-batch_shape error for {model_name}: {str(load_error)}")
-                        self.loading_warnings.append(f"X-ray model {model_name} failed to load: {str(load_error)}")
-                        continue
+                # Use robust loader
+                model = _safe_load_h5(str(model_path), compile_model=XRAY_COMPILE)
                 
                 if model is not None:
                     # Validate model by running a test prediction
                     if not self._validate_model(model, model_path):
                         logger.error(f"Model validation failed for {model_name}")
+                        self.models_unavailable.append({
+                            "name": model_name, 
+                            "path": str(model_path), 
+                            "reason": "validation_failed"
+                        })
                         self.loading_warnings.append(f"X-ray model {model_name} validation failed")
                         continue
                     
@@ -260,10 +298,20 @@ class XrayManager:
                     logger.info(f"✅ Successfully loaded X-ray PCOS model {model_name}: {model_path} (weight: {weight})")
                 else:
                     logger.error(f"❌ Failed to load X-ray model {model_name} - all methods exhausted")
+                    self.models_unavailable.append({
+                        "name": model_name, 
+                        "path": str(model_path), 
+                        "reason": "load_failed"
+                    })
                     self.loading_warnings.append(f"X-ray model {model_name} failed to load")
                     
             except Exception as e:
                 logger.error(f"❌ Exception loading X-ray PCOS model {model_name}: {str(e)}")
+                self.models_unavailable.append({
+                    "name": model_name, 
+                    "path": str(model_path), 
+                    "reason": f"exception: {str(e)}"
+                })
                 continue
         
         # Normalize weights for loaded models
@@ -673,6 +721,7 @@ class XrayManager:
                 "per_model": {},
                 "ensemble_score": 0.0,
                 "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
+                "models_unavailable": self.models_unavailable,
                 "models_used": []
             }
             
@@ -712,6 +761,7 @@ class XrayManager:
                 # No PCOS models available - use YOLO only
                 result["xray_pred"] = self._assess_from_yolo(result["found_labels"])
                 result["xray_risk"] = self._get_yolo_risk(result["found_labels"])
+                result["models_unavailable"] = self.models_unavailable
                 self.loading_warnings.append("No X-ray PCOS models available - using YOLO detection only")
             
             return result
