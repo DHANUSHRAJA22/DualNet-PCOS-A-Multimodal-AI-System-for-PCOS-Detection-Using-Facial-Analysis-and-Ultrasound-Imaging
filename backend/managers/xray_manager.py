@@ -162,6 +162,58 @@ def load_with_weights_fallback(model_path: str, arch: str, input_shape=(100, 100
             model = _build_efficientnet_xray(input_shape, num_classes)
         elif "detector" in arch_lower:
             model = _build_detector_158(input_shape, num_classes)
+        elif 'efficientnetb4' in arch_lower or 'efficientnet_b4' in arch_lower:
+            base_model = tf.keras.applications.EfficientNetB4(
+                weights=None,
+                include_top=False,
+                input_shape=(380, 380, 3)
+            )
+            model = tf.keras.Sequential([
+                base_model,
+                tf.keras.layers.GlobalAveragePooling2D(),
+                tf.keras.layers.Dense(128, activation='relu'),
+                tf.keras.layers.Dropout(0.5),
+                tf.keras.layers.Dense(2, activation='softmax')
+            ])
+        elif 'efficientnetb5' in arch_lower or 'efficientnet_b5' in arch_lower:
+            base_model = tf.keras.applications.EfficientNetB5(
+                weights=None,
+                include_top=False,
+                input_shape=(456, 456, 3)
+            )
+            model = tf.keras.Sequential([
+                base_model,
+                tf.keras.layers.GlobalAveragePooling2D(),
+                tf.keras.layers.Dense(128, activation='relu'),
+                tf.keras.layers.Dropout(0.5),
+                tf.keras.layers.Dense(2, activation='softmax')
+            ])
+        elif 'inception' in arch_lower:
+            base_model = tf.keras.applications.InceptionV3(
+                weights=None,
+                include_top=False,
+                input_shape=(299, 299, 3)
+            )
+            model = tf.keras.Sequential([
+                base_model,
+                tf.keras.layers.GlobalAveragePooling2D(),
+                tf.keras.layers.Dense(128, activation='relu'),
+                tf.keras.layers.Dropout(0.5),
+                tf.keras.layers.Dense(2, activation='softmax')
+            ])
+        elif 'xception' in arch_lower:
+            base_model = tf.keras.applications.Xception(
+                weights=None,
+                include_top=False,
+                input_shape=(299, 299, 3)
+            )
+            model = tf.keras.Sequential([
+                base_model,
+                tf.keras.layers.GlobalAveragePooling2D(),
+                tf.keras.layers.Dense(128, activation='relu'),
+                tf.keras.layers.Dropout(0.5),
+                tf.keras.layers.Dense(2, activation='softmax')
+            ])
         else:
             # Default fallback architecture
             logger.warning(f"Unknown X-ray architecture {arch}, using VGG16 fallback")
