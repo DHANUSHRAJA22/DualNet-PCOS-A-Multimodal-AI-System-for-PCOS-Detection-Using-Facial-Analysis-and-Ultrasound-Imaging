@@ -597,6 +597,18 @@ class FaceManager:
                     include_top=False,
                     input_shape=(300, 300, 3)
                 )
+            elif 'efficientnetb4' in model_name or 'efficientnet_b4' in model_name:
+                base_model = tf.keras.applications.EfficientNetB4(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(380, 380, 3)
+                )
+            elif 'efficientnetb5' in model_name or 'efficientnet_b5' in model_name:
+                base_model = tf.keras.applications.EfficientNetB5(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(456, 456, 3)
+                )
             elif 'mobilenet' in model_name:
                 base_model = tf.keras.applications.MobileNetV2(
                     weights=None,
@@ -608,6 +620,18 @@ class FaceManager:
                     weights=None,
                     include_top=False,
                     input_shape=(224, 224, 3)
+                )
+            elif 'inception' in model_name:
+                base_model = tf.keras.applications.InceptionV3(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(299, 299, 3)
+                )
+            elif 'xception' in model_name:
+                base_model = tf.keras.applications.Xception(
+                    weights=None,
+                    include_top=False,
+                    input_shape=(299, 299, 3)
                 )
             else:
                 logger.warning(f"Unknown architecture for {model_name}, using generic fallback")
