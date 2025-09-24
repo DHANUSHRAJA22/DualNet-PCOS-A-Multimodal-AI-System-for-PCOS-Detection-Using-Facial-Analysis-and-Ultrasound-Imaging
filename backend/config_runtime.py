@@ -6,15 +6,19 @@ without requiring code changes - all configurable via environment variables.
 """
 
 import os
+from pathlib import Path
+
+# Get backend directory for relative paths
+BASE_DIR = Path(__file__).resolve().parent
 
 # Gender mapping & thresholds
-GENDER_LABELS_FILE = os.getenv("GENDER_LABELS_FILE", "backend/models/face/gender.labels.txt")
+GENDER_LABELS_FILE = os.getenv("GENDER_LABELS_FILE", str(BASE_DIR / "models" / "face" / "gender.labels.txt"))
 # Explicitly state the model's output index for "male" (0 or 1). If None, auto-calibrate.
 GENDER_MALE_INDEX = os.getenv("GENDER_MALE_INDEX")
 GENDER_CONF_THRESHOLD = float(os.getenv("GENDER_CONF_THRESHOLD", "0.60"))  # gating threshold
 GENDER_AUTOCALIBRATE = os.getenv("GENDER_AUTOCALIBRATE", "true").lower() == "true"
 # Persisted calibration file
-GENDER_CALIBRATION_CACHE = os.getenv("GENDER_CALIBRATION_CACHE", "backend/models/face/.gender_calibration.json")
+GENDER_CALIBRATION_CACHE = os.getenv("GENDER_CALIBRATION_CACHE", str(BASE_DIR / "models" / "face" / ".gender_calibration.json"))
 
 # Ensemble robustness
 ENSEMBLE_TRIM_RATIO = float(os.getenv("ENSEMBLE_TRIM_RATIO", "0.10"))  # trim lowest/highest 10%

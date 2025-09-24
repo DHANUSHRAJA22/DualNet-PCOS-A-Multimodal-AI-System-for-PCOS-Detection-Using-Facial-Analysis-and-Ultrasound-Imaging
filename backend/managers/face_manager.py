@@ -839,10 +839,30 @@ class FaceManager:
                 # Fallback to regular predict if compiled version fails
                 prediction = self.gender_model.predict(image_array, verbose=0)
             
-            # Extract probabilities using correct mapping
+            # Handle both sigmoid (single output) and softmax (two outputs) models
             probs = prediction[0]
-            male_p = float(probs[self.gender_map["male"]])
-            female_p = float(probs[self.gender_map["female"]])
+            
+            # Check if model returns single sigmoid value or two-class softmax
+            if probs.ndim == 0 or len(probs) == 1:
+                # Single sigmoid output - treat as probability of one class
+                raw_val = float(probs) if probs.ndim == 0 else float(probs[0])
+                male_idx = self.gender_map.get("male", 1)
+                
+                if male_idx == 1:
+                    # Raw value represents male probability
+                    male_p = raw_val
+                    female_p = 1.0 - raw_val
+                else:
+                    # Raw value represents female probability
+                    female_p = raw_val
+                    male_p = 1.0 - raw_val
+                
+                logger.debug(f"Gender model output: sigmoid value {raw_val:.3f} (male_idx={male_idx})")
+            else:
+                # Two-class softmax output (expected format)
+                male_p = float(probs[self.gender_map["male"]])
+                female_p = float(probs[self.gender_map["female"]])
+                logger.debug(f"Gender model output: softmax values {probs} (mapping={self.gender_map})")
             
             pred_label = "male" if male_p >= female_p else "female"
             pred_conf = male_p if pred_label == "male" else female_p
@@ -858,6 +878,7 @@ class FaceManager:
             
         except Exception as e:
             logger.error(f"Gender prediction failed: {str(e)}")
+            logger.debug(f"Gender model shape: {self.gender_model.output_shape if self.gender_model else 'None'}")
             return {
                 "male": 0.0,
                 "female": 1.0,  # Default to female on error
