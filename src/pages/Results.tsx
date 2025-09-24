@@ -1,16 +1,16 @@
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlertCircle, Info, User } from 'lucide-react';
-import { Button } from '../components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { Badge } from '../components/ui/badge';
-import { Alert, AlertDescription } from '../components/ui/alert';
-import { ResultCard } from '../components/ResultCard';
-import { RiskGauge } from '../components/RiskGauge';
-import { AIPerformanceMetrics } from '../components/AIPerformanceMetrics';
-import { MedicalDisclaimer } from '../components/MedicalDisclaimer';
-import type { StructuredPredictionResponse, EnhancedHealthResponse } from '../lib/api';
-import { isStructuredResponse } from '../lib/api';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ResultCard } from '@/components/ResultCard';
+import { RiskGauge } from '@/components/RiskGauge';
+import { AIPerformanceMetrics } from '@/components/AIPerformanceMetrics';
+import { MedicalDisclaimer } from '@/components/MedicalDisclaimer';
+import type { StructuredPredictionResponse, EnhancedHealthResponse } from '@/lib/api';
+import { isStructuredResponse } from '@/lib/api';
 
 export function Results() {
   const location = useLocation();
@@ -50,7 +50,7 @@ export function Results() {
     );
   }
 
-  // Ensure we have structured results with proper error handling
+  // Ensure we have structured results
   let results: StructuredPredictionResponse;
   
   try {
