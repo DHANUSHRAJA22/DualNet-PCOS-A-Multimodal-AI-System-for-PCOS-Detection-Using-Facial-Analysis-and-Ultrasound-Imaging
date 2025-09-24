@@ -220,11 +220,24 @@ class XrayManager:
         # Load each available model with robust fallback
         for model_name, model_path in available_models.items():
             try:
-                # Detect architecture from model name
-                arch = self._detect_architecture(model_name)
+                logger.info(f"Attempting to load X-ray model: {model_name} from {model_path}")
                 
-                # Try loading with fallback for batch_shape issues
-                model = load_with_weights_fallback(str(model_path), arch, settings.XRAY_IMAGE_SIZE, 2)
+                # Try normal model loading first
+                model = None
+                try:
+                    model = tf.keras.models.load_model(str(model_path), compile=False)
+                    logger.info(f"✅ Successfully loaded X-ray model {model_name} normally")
+                except Exception as load_error:
+                    logger.warning(f"Normal loading failed for {model_name}: {str(load_error)}")
+                    
+                    # Check if it's the batch_shape error
+                    if "batch_shape" in str(load_error) or "Unrecognized keyword arguments" in str(load_error):
+                        logger.info(f"Attempting fallback reconstruction for {model_name}")
+                        model = self._reconstruct_xray_model(model_path, model_name)
+                    else:
+                        logger.error(f"Non-batch_shape error for {model_name}: {str(load_error)}")
+                        self.loading_warnings.append(f"X-ray model {model_name} failed to load: {str(load_error)}")
+                        continue
                 
                 if model is not None:
                     # Validate model by running a test prediction
@@ -244,14 +257,13 @@ class XrayManager:
                         "input_shape": settings.XRAY_IMAGE_SIZE
                     }
                     loaded_count += 1
-                    logger.info(f"Loaded X-ray PCOS model {model_name}: {model_path} (weight: {weight})")
+                    logger.info(f"✅ Successfully loaded X-ray PCOS model {model_name}: {model_path} (weight: {weight})")
                 else:
-                    logger.error(f"Failed to load X-ray model {model_name}")
+                    logger.error(f"❌ Failed to load X-ray model {model_name} - all methods exhausted")
                     self.loading_warnings.append(f"X-ray model {model_name} failed to load")
                     
             except Exception as e:
-                logger.error(f"Failed to load X-ray PCOS model {model_name}: {str(e)}")
-                self.loading_warnings.append(f"X-ray model {model_name} failed to load: {str(e)}")
+                logger.error(f"❌ Exception loading X-ray PCOS model {model_name}: {str(e)}")
                 continue
         
         # Normalize weights for loaded models
@@ -270,11 +282,105 @@ class XrayManager:
         self.model_status["xray"]["available"] = len(available_models) > 0
         
         if loaded_count > 0:
-            logger.info(f"Successfully loaded {loaded_count} X-ray PCOS models")
+            logger.info(f"✅ Successfully loaded {loaded_count}/{len(available_models)} X-ray PCOS models")
         else:
-            logger.warning("No X-ray PCOS models could be loaded - X-ray analysis will be unavailable")
+            logger.warning("⚠️  No X-ray PCOS models could be loaded - X-ray analysis will be unavailable")
+            logger.info("YOLO detection will still work for object detection in X-rays")
             self.model_status["xray"]["error"] = "No models loaded successfully"
             self.loading_warnings.append("No X-ray PCOS models could be loaded - X-ray analysis will be unavailable")
+    
+    def _reconstruct_xray_model(self, model_path: Path, model_name: str):
+        """
+        Reconstruct X-ray model architecture and load weights to bypass batch_shape issues
+        
+        Args:
+            model_path: Path to model file
+            model_name: Model name for architecture detection
+            
+        Returns:
+            Reconstructed model or None if failed
+        """
+        try:
+            logger.info(f"Reconstructing X-ray model architecture for {model_name}")
+            
+            # Detect architecture from model name
+            model_name_lower = model_name.lower()
+            input_shape = settings.XRAY_IMAGE_SIZE + (3,)  # (100, 100, 3)
+            
+            if "resnet50" in model_name_lower:
+                logger.debug(f"Building ResNet50 architecture for {model_name}")
+                base_model = tf.keras.applications.ResNet50(
+                    weights=None,
+                    include_top=False,
+                    input_shape=input_shape
+                )
+                model = tf.keras.Sequential([
+                    base_model,
+                    tf.keras.layers.GlobalAveragePooling2D(),
+                    tf.keras.layers.Dense(128, activation='relu'),
+                    tf.keras.layers.Dropout(0.5),
+                    tf.keras.layers.Dense(2, activation='softmax')  # Binary classification
+                ])
+            elif "vgg16" in model_name_lower:
+                logger.debug(f"Building VGG16 architecture for {model_name}")
+                base_model = tf.keras.applications.VGG16(
+                    weights=None,
+                    include_top=False,
+                    input_shape=input_shape
+                )
+                model = tf.keras.Sequential([
+                    base_model,
+                    tf.keras.layers.Flatten(),
+                    tf.keras.layers.Dense(512, activation='relu'),
+                    tf.keras.layers.Dropout(0.5),
+                    tf.keras.layers.Dense(256, activation='relu'),
+                    tf.keras.layers.Dropout(0.5),
+                    tf.keras.layers.Dense(2, activation='softmax')
+                ])
+            elif "detector" in model_name_lower:
+                logger.debug(f"Building custom detector architecture for {model_name}")
+                # Custom architecture for detector_158
+                model = tf.keras.Sequential([
+                    tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=input_shape),
+                    tf.keras.layers.MaxPooling2D((2, 2)),
+                    tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
+                    tf.keras.layers.MaxPooling2D((2, 2)),
+                    tf.keras.layers.Conv2D(128, (3, 3), activation='relu'),
+                    tf.keras.layers.MaxPooling2D((2, 2)),
+                    tf.keras.layers.Flatten(),
+                    tf.keras.layers.Dense(512, activation='relu'),
+                    tf.keras.layers.Dropout(0.5),
+                    tf.keras.layers.Dense(256, activation='relu'),
+                    tf.keras.layers.Dropout(0.5),
+                    tf.keras.layers.Dense(2, activation='softmax')
+                ])
+            else:
+                logger.warning(f"Unknown architecture for {model_name}, using generic CNN")
+                # Generic CNN fallback
+                model = tf.keras.Sequential([
+                    tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=input_shape),
+                    tf.keras.layers.MaxPooling2D((2, 2)),
+                    tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
+                    tf.keras.layers.MaxPooling2D((2, 2)),
+                    tf.keras.layers.Conv2D(128, (3, 3), activation='relu'),
+                    tf.keras.layers.GlobalAveragePooling2D(),
+                    tf.keras.layers.Dense(128, activation='relu'),
+                    tf.keras.layers.Dropout(0.5),
+                    tf.keras.layers.Dense(2, activation='softmax')
+                ])
+            
+            # Try to load weights
+            try:
+                model.load_weights(str(model_path))
+                logger.info(f"✅ Successfully reconstructed and loaded weights for {model_name}")
+                return model
+            except Exception as weights_error:
+                logger.error(f"Failed to load weights for reconstructed {model_name}: {str(weights_error)}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to reconstruct X-ray model {model_name}: {str(e)}")
+            return None
     
     def _detect_architecture(self, model_name: str) -> str:
         """Detect architecture from model name"""
