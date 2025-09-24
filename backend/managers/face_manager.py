@@ -9,6 +9,8 @@ import os
 import uuid
 import logging
 import json
+import re
+import json
 import h5py
 from typing import Dict, Optional, Any, Tuple
 from pathlib import Path
@@ -25,9 +27,81 @@ from config import (
     settings, FACE_MODELS_DIR, UPLOADS_DIR, get_risk_level,
     get_available_face_models, load_model_labels, get_ensemble_weights, normalize_weights
 )
+from config_runtime import (
+    GENDER_LABELS_FILE, GENDER_MALE_INDEX, GENDER_CONF_THRESHOLD,
+    GENDER_AUTOCALIBRATE, GENDER_CALIBRATION_CACHE
+)
+from ensemble import robust_weighted_ensemble
 from utils.validators import validate_image, get_safe_filename
 
 logger = logging.getLogger(__name__)
+
+def _read_labels_any_format(path):
+    """Read labels from JSON array or newline-separated format"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            txt = f.read().strip()
+        # JSON array format? (preferred in README)
+        if txt.startswith("["):
+            arr = json.loads(txt)
+            return [str(x).strip().lower() for x in arr]
+        # fallback: newline-separated
+        return [re.sub(r"\s+", "", line.lower()) for line in txt.splitlines() if line.strip()]
+    except Exception as e:
+        logger.warning(f"Could not read labels from {path}: {str(e)}")
+        return ["female", "male"]  # Default fallback
+
+def _load_gender_mapping(model, labels_path, calibration_cache, forced_male_index):
+    """Load and calibrate gender mapping to fix label inversion"""
+    labels = _read_labels_any_format(labels_path)
+    if set(labels) != {"male", "female"}:
+        logger.warning(f"[gender] Unexpected labels {labels} in {labels_path}; expected ['male','female']")
+    
+    # Default: assume index matches labels ordering
+    label_index = {lab: i for i, lab in enumerate(labels)}
+    cache = None
+    
+    if os.path.exists(calibration_cache):
+        try:
+            with open(calibration_cache, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+        except Exception:
+            cache = None
+
+    if forced_male_index is not None:
+        male_idx = int(forced_male_index)
+        female_idx = 1 - male_idx
+        mapping = {"male": male_idx, "female": female_idx}
+        logger.info(f"[gender] Using forced male index={male_idx}")
+    elif cache and "male_index" in cache:
+        male_idx = int(cache["male_index"])
+        female_idx = 1 - male_idx
+        mapping = {"male": male_idx, "female": female_idx}
+        logger.info(f"[gender] Using cached gender mapping male_index={male_idx}")
+    elif GENDER_AUTOCALIBRATE:
+        # Quick 1-shot calibration: run a synthetic neutral input both ways,
+        # then pick the mapping that yields a "more confident mode" (stable argmax).
+        # If inconclusive, default to 'male at index 0'.
+        dummy = np.zeros((1, 249, 249, 3), dtype="float32")  # Gender model input size
+        probs = model.predict(dummy, verbose=0)[0].tolist()
+        # Heuristic: if logits are stable but swapped w.r.t labels ordering,
+        # pick the index whose probability is greater for the label likely at index0.
+        # Fall back to 0 if tie.
+        male_idx = 0 if probs[0] >= probs[1] else 1
+        mapping = {"male": male_idx, "female": 1 - male_idx}
+        try:
+            os.makedirs(os.path.dirname(calibration_cache), exist_ok=True)
+            with open(calibration_cache, "w", encoding="utf-8") as f:
+                json.dump({"male_index": male_idx}, f)
+        except Exception:
+            pass
+        logger.info(f"[gender] Auto-calibrated male_index={male_idx} with dummy inference")
+    else:
+        male_idx = label_index.get("male", 0)
+        mapping = {"male": male_idx, "female": 1 - male_idx}
+        logger.info(f"[gender] Using labels-file order for gender mapping male_index={male_idx}")
+
+    return mapping
 
 # Create a compiled prediction function to avoid retracing warnings
 @tf.function(reduce_retracing=True)
@@ -134,6 +208,7 @@ class FaceManager:
         self.gender_model = None
         self.pcos_models = {}  # Dict[str, Dict[str, Any]]
         self.can_predict_gender = False
+        self.gender_map = {"male": 0, "female": 1}  # Default mapping
         self.ensemble_weights = {}
         
         # Model status tracking
@@ -180,6 +255,19 @@ class FaceManager:
                 self.can_predict_gender = True
                 self.model_status["gender"]["loaded"] = True
                 logger.info(f"Loaded gender model: {gender_path}")
+                
+                # Load gender mapping to fix inversion issues
+                try:
+                    self.gender_map = _load_gender_mapping(
+                        self.gender_model, 
+                        GENDER_LABELS_FILE, 
+                        GENDER_CALIBRATION_CACHE, 
+                        GENDER_MALE_INDEX
+                    )
+                    logger.info(f"Gender mapping loaded: {self.gender_map}")
+                except Exception as e:
+                    logger.warning(f"Could not load gender mapping: {str(e)}, using defaults")
+                    self.gender_map = {"male": 0, "female": 1}
             else:
                 logger.warning(f"Gender model not found: {gender_path}")
                 self.model_status["gender"]["error"] = "File not found"
@@ -751,48 +839,21 @@ class FaceManager:
                 # Fallback to regular predict if compiled version fails
                 prediction = self.gender_model.predict(image_array, verbose=0)
             
-            # Debug logging for gender prediction
-            logger.debug(f"Gender prediction raw probabilities: {prediction[0]}")
+            # Extract probabilities using correct mapping
+            probs = prediction[0]
+            male_p = float(probs[self.gender_map["male"]])
+            female_p = float(probs[self.gender_map["female"]])
             
-            # Extract probabilities (assuming binary classification)
-            if prediction.shape[1] == 1:
-                # Single output (sigmoid)
-                female_prob = float(prediction[0][0])
-                male_prob = 1.0 - female_prob
-                predicted_index = 0 if female_prob > 0.5 else 1
-            else:
-                # Two outputs (softmax)
-                # Get raw probabilities
-                prob_0 = float(prediction[0][0])
-                prob_1 = float(prediction[0][1])
-                predicted_index = 0 if prob_0 > prob_1 else 1
-                
-                logger.debug(f"Gender prediction index: {predicted_index}")
-                
-                # Auto-correction for inverted model training
-                # If model was trained with [male, female] but labels.txt has [female, male]
-                # We need to swap the mapping
-                corrected_index = 1 - predicted_index  # Swap 0->1, 1->0
-                
-                logger.debug(f"Gender corrected index: {corrected_index}")
-                
-                # Map corrected index to probabilities
-                if corrected_index == 0:  # female
-                    female_prob = max(prob_0, prob_1)
-                    male_prob = min(prob_0, prob_1)
-                else:  # male
-                    male_prob = max(prob_0, prob_1)
-                    female_prob = min(prob_0, prob_1)
+            pred_label = "male" if male_p >= female_p else "female"
+            pred_conf = male_p if pred_label == "male" else female_p
             
-            # Determine final label based on corrected probabilities
-            label = "female" if female_prob > male_prob else "male"
-            
-            logger.debug(f"Gender final mapping - Female: {female_prob:.3f}, Male: {male_prob:.3f}, Label: {label}")
+            logger.debug(f"Gender prediction - Male: {male_p:.3f}, Female: {female_p:.3f}, Label: {pred_label}, Conf: {pred_conf:.3f}")
             
             return {
-                "male": male_prob,
-                "female": female_prob,
-                "label": label
+                "male": male_p,
+                "female": female_p,
+                "label": pred_label,
+                "confidence": pred_conf
             }
             
         except Exception as e:
@@ -800,7 +861,8 @@ class FaceManager:
             return {
                 "male": 0.0,
                 "female": 1.0,  # Default to female on error
-                "label": "female"
+                "label": "female",
+                "confidence": 1.0
             }
     
     async def predict_pcos_ensemble(self, image_bytes: bytes) -> Dict[str, Any]:
@@ -866,26 +928,38 @@ class FaceManager:
                 "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
                 "labels": ["non_pcos", "pcos"]
             }
-        # Calculate weighted ensemble score
-        total_weight = 0.0
-        weighted_sum = 0.0
         
+        # Prepare items for robust ensemble
+        ensemble_items = []
         for model_name, score in per_model_scores.items():
             weight = self.pcos_models[model_name]["weight"]
-            weighted_sum += score * weight
-            total_weight += weight
+            ensemble_items.append({
+                "name": model_name,
+                "score": score,
+                "weight": weight
+            })
         
-        ensemble_score = weighted_sum / total_weight if total_weight > 0 else 0.0
+        # Apply robust ensemble
+        ensemble_score, kept_items, excluded_items = robust_weighted_ensemble(ensemble_items)
+        
+        # Build ensemble metadata
+        ensemble_meta = {
+            "method": "robust_weighted_average",
+            "score": float(ensemble_score),
+            "models_used": len(kept_items),
+            "weights_used": {item["name"]: item["weight"] for item in kept_items},
+            "ensemble_debug": {
+                "trim_ratio": ENSEMBLE_TRIM_RATIO,
+                "mad_k": ENSEMBLE_MAD_K,
+                "excluded": excluded_items,
+                "used": kept_items
+            }
+        }
         
         return {
             "per_model": per_model_scores,
             "ensemble_score": float(ensemble_score),
-            "ensemble": {
-                "method": "weighted_average",
-                "score": float(ensemble_score),
-                "models_used": successful_predictions,
-                "weights_used": {name: self.pcos_models[name]["weight"] for name in per_model_scores.keys()}
-            },
+            "ensemble": ensemble_meta,
             "labels": ["non_pcos", "pcos"]
         }
     
@@ -921,6 +995,11 @@ class FaceManager:
             result = {
                 "face_img": f"/static/uploads/{filename}",
                 "gender": gender_result,
+                "face_pcos_gating": {
+                    "skipped": False,
+                    "threshold": GENDER_CONF_THRESHOLD,
+                    "reason": None
+                },
                 "face_scores": [],
                 "face_pred": None,
                 "face_risk": "unknown",
@@ -931,7 +1010,15 @@ class FaceManager:
             }
             
             # Check if we should skip PCOS analysis for males
-            if gender_result["label"] == "male":
+            should_skip = (gender_result["label"] == "male" and 
+                          gender_result.get("confidence", 0) >= GENDER_CONF_THRESHOLD)
+            
+            if should_skip:
+                result["face_pcos_gating"] = {
+                    "skipped": True,
+                    "threshold": GENDER_CONF_THRESHOLD,
+                    "reason": "Male face detected; PCOS face analysis skipped"
+                }
                 result["face_pred"] = "Male face detected; PCOS face analysis skipped"
                 result["face_scores"] = []
                 result["face_risk"] = "unknown"
