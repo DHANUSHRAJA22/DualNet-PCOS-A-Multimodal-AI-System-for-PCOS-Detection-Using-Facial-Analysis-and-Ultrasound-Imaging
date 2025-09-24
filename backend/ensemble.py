@@ -7,80 +7,10 @@ with configurable risk thresholds and detailed explanations.
 
 import logging
 import numpy as np
-import numpy as np
 from typing import Dict, Optional, Any
 from config import settings, get_risk_level
 
 logger = logging.getLogger(__name__)
-from config_runtime import (
-    ENSEMBLE_TRIM_RATIO, ENSEMBLE_MAD_K,
-    ENSEMBLE_MODEL_DENYLIST, ENSEMBLE_MODEL_ALLOWLIST
-)
-
-def robust_weighted_ensemble(items):
-    """
-    Robust ensemble with outlier filtering and trimmed mean
-    
-    Args:
-        items: list of dicts [{ 'name': str, 'score': float, 'weight': float }]
-        
-    Returns:
-        Tuple of (final_score, kept_items, excluded_items)
-    """
-    # Apply allow/deny lists
-    kept, excluded = [], []
-    for item in items:
-        name = item["name"]
-        if ENSEMBLE_MODEL_ALLOWLIST and name not in ENSEMBLE_MODEL_ALLOWLIST:
-            excluded.append({**item, "reason": "not_in_allowlist"})
-            continue
-        if name in ENSEMBLE_MODEL_DENYLIST:
-            excluded.append({**item, "reason": "denylist"})
-            continue
-        kept.append(item)
-
-    if not kept:
-        return 0.0, [], excluded
-
-    scores = np.array([k["score"] for k in kept], dtype=float)
-
-    # Trim extremes if we have enough models
-    if 0.0 < ENSEMBLE_TRIM_RATIO < 0.5 and len(kept) >= 3:
-        lo = np.quantile(scores, ENSEMBLE_TRIM_RATIO)
-        hi = np.quantile(scores, 1.0 - ENSEMBLE_TRIM_RATIO)
-        new_kept = []
-        for k in kept:
-            if lo <= k["score"] <= hi:
-                new_kept.append(k)
-            else:
-                excluded.append({**k, "reason": "trimmed"})
-        kept = new_kept
-        if not kept:
-            # Fallback to original if all trimmed
-            kept = sorted([item for item in items if item not in excluded], key=lambda x: x["score"])
-
-    # MAD outlier filter
-    if len(kept) >= 3:
-        s = np.array([k["score"] for k in kept], dtype=float)
-        med = np.median(s)
-        mad = np.median(np.abs(s - med)) or 1e-6
-        z_mad = 0.6745 * (s - med) / mad
-        new_kept = []
-        for k, z in zip(kept, z_mad):
-            if abs(z) <= ENSEMBLE_MAD_K:
-                new_kept.append(k)
-            else:
-                excluded.append({**k, "reason": f"mad_outlier|z={float(z):.2f}"})
-        kept = new_kept or kept
-
-    # Renormalize weights
-    weights = np.array([max(1e-6, k["weight"]) for k in kept], dtype=float)
-    weights = weights / weights.sum()
-    
-    # Calculate final weighted score
-    final_score = float(np.sum(weights * np.array([k["score"] for k in kept], dtype=float)))
-
-    return final_score, kept, excluded
 
 class EnsembleManager:
     """
