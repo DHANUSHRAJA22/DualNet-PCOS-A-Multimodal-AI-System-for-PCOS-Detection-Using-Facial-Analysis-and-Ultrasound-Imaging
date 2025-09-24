@@ -18,6 +18,9 @@ export function Results() {
   
   const rawResults = location.state?.results;
   const healthDetails = location.state?.healthDetails as EnhancedHealthResponse;
+  
+  // Extract final confidence from results
+  const finalConfidence = rawResults?.final?.confidence || 0;
 
   if (!rawResults) {
     return (

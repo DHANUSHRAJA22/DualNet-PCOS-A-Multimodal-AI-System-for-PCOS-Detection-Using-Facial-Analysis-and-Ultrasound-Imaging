@@ -268,7 +268,7 @@ class FaceManager:
                     logger.info(f"Gender mapping loaded: {self.gender_map}")
                 except Exception as e:
                     logger.warning(f"Could not load gender mapping: {str(e)}, using defaults")
-                    self.gender_map = {"male": 0, "female": 1}
+                    self.gender_map = {"male": 1, "female": 0}  # Fixed default for inverted models
             else:
                 logger.warning(f"Gender model not found: {gender_path}")
                 self.model_status["gender"]["error"] = "File not found"

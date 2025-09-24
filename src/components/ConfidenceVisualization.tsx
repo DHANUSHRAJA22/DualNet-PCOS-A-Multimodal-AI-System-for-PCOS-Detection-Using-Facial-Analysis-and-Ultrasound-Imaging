@@ -120,8 +120,10 @@ export function ConfidenceVisualization({ scores, prediction, analysisType, conf
                   <span className="text-slate-600">Final Score:</span>
                   <span className="font-medium">{(ensemble.score * 100).toFixed(1)}%</span>
                 </div>
+                <div className="col-span-2">
                 <div className="text-xs text-slate-500 mt-1">
                   Risk Bands: Low &lt; {(thresholds.low * 100).toFixed(0)}%, High ≥ {(thresholds.high * 100).toFixed(0)}%
+                </div>
                 </div>
                 {ensemble.weights_used && (
                   <div className="col-span-2">
