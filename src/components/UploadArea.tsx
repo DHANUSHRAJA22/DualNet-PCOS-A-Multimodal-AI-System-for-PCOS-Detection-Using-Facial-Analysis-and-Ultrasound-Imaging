@@ -3,6 +3,7 @@ import { Upload, Camera, Image as ImageIcon, X, FileText, Info } from 'lucide-re
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { CameraCapture } from './CameraCapture';
+import { CameraCapture } from './CameraCapture';
 import { fixImageOrientation, type ProcessedImage } from '@/lib/image';
 import { toast } from 'sonner';
 
@@ -30,6 +31,7 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
   const [isDragOver, setIsDragOver] = useState(false);
   const [processedImage, setProcessedImage] = useState<ProcessedImage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -100,6 +102,10 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
     e.target.value = '';
   }, [processFile]);
 
+  const handleCameraCapture = useCallback((file: File) => {
+    processFile(file);
+    setCameraOpen(false);
+  }, [processFile]);
   const handleCameraCapture = useCallback((file: File) => {
     processFile(file);
     setCameraOpen(false);
@@ -260,6 +266,12 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
           <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         </div>
       )}
+      
+      <CameraCapture
+        open={cameraOpen}
+        onOpenChange={setCameraOpen}
+        onCapture={handleCameraCapture}
+      />
       
       <CameraCapture
         open={cameraOpen}

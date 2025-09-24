@@ -29,7 +29,8 @@ from config import (
 )
 from config_runtime import (
     GENDER_LABELS_FILE, GENDER_MALE_INDEX, GENDER_CONF_THRESHOLD,
-    GENDER_AUTOCALIBRATE, GENDER_CALIBRATION_CACHE
+    GENDER_AUTOCALIBRATE, GENDER_CALIBRATION_CACHE,
+    ENSEMBLE_TRIM_RATIO, ENSEMBLE_MAD_K
 )
 from ensemble import robust_weighted_ensemble
 from utils.validators import validate_image, get_safe_filename
@@ -871,14 +872,14 @@ class FaceManager:
             if probs.ndim == 0 or len(probs) == 1:
                 # Single sigmoid output - treat as probability of one class
                 raw_val = float(probs) if probs.ndim == 0 else float(probs[0])
-                male_idx = self.gender_map.get("male", 1)
+                male_idx = self.gender_map.get("male", 0)
                 
-                if male_idx == 1:
-                    # Raw value represents male probability
+                if male_idx == 0:
+                    # Raw value represents male probability (index 0)
                     male_p = raw_val
                     female_p = 1.0 - raw_val
                 else:
-                    # Raw value represents female probability
+                    # Raw value represents female probability (index 1)
                     female_p = raw_val
                     male_p = 1.0 - raw_val
                 
