@@ -116,6 +116,7 @@ export function Results() {
 
   // Extract risk and confidence from structured response
   const finalRisk = results.final.risk;
+  const finalConfidence = results.final.confidence;
   const explanation = results.final.explanation;
   const processingTime = results.processing_time_ms;
   
@@ -204,7 +205,7 @@ export function Results() {
             <div className="grid md:grid-cols-2 gap-6">
               <RiskGauge 
                 riskLevel={finalRisk as 'low' | 'moderate' | 'high' | 'unknown'}
-                confidence={finalConfidence > 1 ? finalConfidence : finalConfidence * 100}
+                confidence={finalConfidence}
                 thresholds={thresholds}
               />
               <div className="space-y-4">
@@ -324,7 +325,7 @@ export function Results() {
                   visualizationImage={modality.visualization}
                   foundLabels={modality.found_labels}
                   riskLevel={modality.risk as 'low' | 'moderate' | 'high' | 'unknown'}
-                  confidence={finalConfidence > 1 ? finalConfidence : finalConfidence * 100}
+                  confidence={finalConfidence}
                   thresholds={thresholds}
                   modality={modality}
                 />
