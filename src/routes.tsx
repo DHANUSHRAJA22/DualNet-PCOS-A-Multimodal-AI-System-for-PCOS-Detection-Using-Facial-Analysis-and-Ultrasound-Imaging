@@ -1,12 +1,12 @@
 import { createBrowserRouter } from 'react-router-dom';
-import { Index } from './pages/Index';
+import { IndexPage } from './pages/Index';
 import { Results } from './pages/Results';
 import AppErrorBoundary from './components/AppErrorBoundary';
 
 export const router = createBrowserRouter([
   {
     path: '/',
-    element: <Index />,
+    element: <IndexPage />,
     errorElement: <AppErrorBoundary />
   },
   {
