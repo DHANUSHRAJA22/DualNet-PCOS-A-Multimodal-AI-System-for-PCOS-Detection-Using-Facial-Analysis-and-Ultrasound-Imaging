@@ -121,7 +121,7 @@ export function resolveApiBase(): string {
 export function withBase(path?: string): string {
   if (!path) return ''
   const apiBase = resolveApiBase()
-  if (!apiBase) return path
+  if (!apiBase || path.startsWith('http')) return path
   return `${apiBase}${path}`
 }
 
