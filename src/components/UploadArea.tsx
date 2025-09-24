@@ -162,15 +162,6 @@ export function UploadArea({
                     <p className="text-xs text-muted-foreground mb-4">
                       Supports JPEG, PNG, WebP (max 5MB)
                     </p>
-                    <div className="flex gap-2 justify-center">
-                      <Button onClick={handleUploadClick} variant="outline" size="sm">
-                        <FileImage className="h-4 w-4 mr-2" />
-                        Browse Files
-                      </Button>
-                      <Button onClick={() => setShowCamera(true)} variant="outline" size="sm">
-                        <Camera className="h-4 w-4 mr-2" />
-                        Open Camera
-                      </Button>
                     </div>
                   </div>
                 </motion.div>
