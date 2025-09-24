@@ -751,17 +751,43 @@ class FaceManager:
                 # Fallback to regular predict if compiled version fails
                 prediction = self.gender_model.predict(image_array, verbose=0)
             
+            # Debug logging for gender prediction
+            logger.debug(f"Gender prediction raw probabilities: {prediction[0]}")
+            
             # Extract probabilities (assuming binary classification)
             if prediction.shape[1] == 1:
                 # Single output (sigmoid)
                 female_prob = float(prediction[0][0])
                 male_prob = 1.0 - female_prob
+                predicted_index = 0 if female_prob > 0.5 else 1
             else:
                 # Two outputs (softmax)
-                male_prob = float(prediction[0][0])
-                female_prob = float(prediction[0][1])
+                # Get raw probabilities
+                prob_0 = float(prediction[0][0])
+                prob_1 = float(prediction[0][1])
+                predicted_index = 0 if prob_0 > prob_1 else 1
+                
+                logger.debug(f"Gender prediction index: {predicted_index}")
+                
+                # Auto-correction for inverted model training
+                # If model was trained with [male, female] but labels.txt has [female, male]
+                # We need to swap the mapping
+                corrected_index = 1 - predicted_index  # Swap 0->1, 1->0
+                
+                logger.debug(f"Gender corrected index: {corrected_index}")
+                
+                # Map corrected index to probabilities
+                if corrected_index == 0:  # female
+                    female_prob = max(prob_0, prob_1)
+                    male_prob = min(prob_0, prob_1)
+                else:  # male
+                    male_prob = max(prob_0, prob_1)
+                    female_prob = min(prob_0, prob_1)
             
+            # Determine final label based on corrected probabilities
             label = "female" if female_prob > male_prob else "male"
+            
+            logger.debug(f"Gender final mapping - Female: {female_prob:.3f}, Male: {male_prob:.3f}, Label: {label}")
             
             return {
                 "male": male_prob,
