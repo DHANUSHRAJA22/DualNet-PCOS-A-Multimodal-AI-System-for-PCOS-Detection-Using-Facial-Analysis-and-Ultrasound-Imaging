@@ -266,6 +266,12 @@ export const UploadArea: React.FC<UploadAreaProps> = ({
         onOpenChange={setCameraOpen}
         onCapture={handleCameraCapture}
       />
+      
+      <CameraCapture
+        open={cameraOpen}
+        onOpenChange={setCameraOpen}
+        onCapture={handleCameraCapture}
+      />
     </div>
   );
 };

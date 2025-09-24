@@ -26,6 +26,7 @@ from config import (
     get_available_xray_models, load_model_labels, get_ensemble_weights, normalize_weights
 )
 from config_runtime import XRAY_COMPILE, XRAY_ALLOW_FALLBACK
+from config_runtime import ENSEMBLE_TRIM_RATIO, ENSEMBLE_MAD_K
 from ensemble import robust_weighted_ensemble
 from utils.validators import validate_image, get_safe_filename
 
@@ -43,33 +44,73 @@ def _safe_load_h5(path, compile_model=False):
         Loaded model or None if all methods fail
     """
     try:
-        return load_model(path, compile=compile_model)
+        # Try loading with custom objects to handle batch_shape issues
+        custom_objects = {}
+        return load_model(path, compile=compile_model, custom_objects=custom_objects)
     except Exception as e1:
         logger.warning(f"[xray] load_model failed for {path}: {e1}")
         
-        # Try reading model_config from H5 attrs
+        # Method 1: Try reading model_config from H5 attrs and fix batch_shape
         try:
             with h5py.File(path, "r") as f:
                 if "model_config" in f.attrs:
                     cfg = f.attrs["model_config"].decode("utf-8")
+                    
+                    # Parse and fix batch_shape issues
+                    import json
+                    config_dict = json.loads(cfg)
+                    
+                    # Remove batch_shape from all InputLayer configs
+                    def remove_batch_shape(config):
+                        if isinstance(config, dict):
+                            if config.get('class_name') == 'InputLayer':
+                                if 'config' in config and 'batch_shape' in config['config']:
+                                    # Replace batch_shape with input_shape
+                                    batch_shape = config['config']['batch_shape']
+                                    if batch_shape and len(batch_shape) > 1:
+                                        config['config']['input_shape'] = batch_shape[1:]
+                                    del config['config']['batch_shape']
+                                    logger.debug(f"Fixed batch_shape in InputLayer for {path}")
+                            
+                            for key, value in config.items():
+                                remove_batch_shape(value)
+                        elif isinstance(config, list):
+                            for item in config:
+                                remove_batch_shape(item)
+                    
+                    remove_batch_shape(config_dict)
+                    fixed_cfg = json.dumps(config_dict)
+                    
                     try:
-                        model = model_from_json(cfg)
+                        model = model_from_json(fixed_cfg)
                         model.load_weights(path, by_name=True, skip_mismatch=True)
-                        logger.info(f"[xray] Successfully loaded via model_from_json: {path}")
+                        logger.info(f"[xray] Successfully loaded via fixed model_from_json: {path}")
                         return model
                     except Exception as e2:
-                        logger.warning(f"[xray] model_from_json fallback failed: {e2}")
+                        logger.warning(f"[xray] fixed model_from_json fallback failed: {e2}")
         except Exception as e3:
             logger.warning(f"[xray] h5py open failed: {e3}")
         
-        # Final fallback: try with custom objects
+        # Method 2: Architecture reconstruction based on filename
         try:
-            custom_objects = {"GlorotUniform": tf.keras.initializers.glorot_uniform()}
-            model = load_model(path, compile=compile_model, custom_objects=custom_objects)
+            return load_with_weights_fallback(path, Path(path).stem, (100, 100, 3), 2)
+        except Exception as e4:
+            logger.warning(f"[xray] weights fallback failed: {e4}")
+        
+        # Final fallback: try with more custom objects
+        try:
+            custom_objects = {
+                "GlorotUniform": tf.keras.initializers.glorot_uniform(),
+                "VarianceScaling": tf.keras.initializers.VarianceScaling(),
+                "RandomUniform": tf.keras.initializers.RandomUniform(),
+                "Zeros": tf.keras.initializers.Zeros(),
+                "Ones": tf.keras.initializers.Ones()
+            }
+            model = load_model(path, compile=compile_model, custom_objects=custom_objects, safe_mode=False)
             logger.info(f"[xray] Successfully loaded with custom_objects: {path}")
             return model
-        except Exception as e4:
-            logger.error(f"[xray] All load fallbacks failed for {path}: {e4}")
+        except Exception as e5:
+            logger.error(f"[xray] All load fallbacks failed for {path}: {e5}")
             return None
 
 # Compiled prediction function to avoid retracing

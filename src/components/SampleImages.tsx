@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { toast } from 'sonner'
 import { fixImageOrientation } from '@/lib/image'
 import type { ProcessedImage } from '@/lib/image'
+import { withBase } from '@/lib/api'
 
 interface SampleImagesProps {
   onSelectFaceSample: (processedImage: ProcessedImage) => void

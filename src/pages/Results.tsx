@@ -18,7 +18,7 @@ export function Results() {
   
   const rawResults = location.state?.results;
   const healthDetails = location.state?.healthDetails as EnhancedHealthResponse;
-
+  
   if (!rawResults) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
@@ -116,7 +116,6 @@ export function Results() {
 
   // Extract risk and confidence from structured response
   const finalRisk = results.final.risk;
-  const finalConfidence = results.final.confidence;
   const explanation = results.final.explanation;
   const processingTime = results.processing_time_ms;
   
