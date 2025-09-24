@@ -49,7 +49,7 @@ def _read_labels_any_format(path):
         return [re.sub(r"\s+", "", line.lower()) for line in txt.splitlines() if line.strip()]
     except Exception as e:
         logger.warning(f"Could not read labels from {path}: {str(e)}")
-        return ["female", "male"]  # Default fallback
+        return ["male", "female"]  # Default fallback
 
 def _load_gender_mapping(model, labels_path, calibration_cache, forced_male_index):
     """Load and calibrate gender mapping to fix label inversion"""
@@ -845,6 +845,7 @@ class FaceManager:
             Dictionary with gender prediction results
         """
         if not self.can_predict_gender or self.gender_model is None:
+            logger.debug("Gender model not available, defaulting to female")
             return {
                 "male": 0.0,
                 "female": 1.0,  # Default to female to allow PCOS analysis
@@ -881,17 +882,17 @@ class FaceManager:
                     female_p = raw_val
                     male_p = 1.0 - raw_val
                 
-                logger.debug(f"Gender model output: sigmoid value {raw_val:.3f} (male_idx={male_idx})")
+                logger.info(f"Gender model: sigmoid output {raw_val:.3f} (male_idx={male_idx})")
             else:
                 # Two-class softmax output (expected format)
                 male_p = float(probs[self.gender_map["male"]])
                 female_p = float(probs[self.gender_map["female"]])
-                logger.debug(f"Gender model output: softmax values {probs} (mapping={self.gender_map})")
+                logger.info(f"Gender model: softmax output {probs} (mapping={self.gender_map})")
             
             pred_label = "male" if male_p >= female_p else "female"
             pred_conf = male_p if pred_label == "male" else female_p
             
-            logger.debug(f"Gender prediction - Male: {male_p:.3f}, Female: {female_p:.3f}, Label: {pred_label}, Conf: {pred_conf:.3f}")
+            logger.info(f"Gender prediction - Male: {male_p:.3f}, Female: {female_p:.3f}, Label: {pred_label}, Conf: {pred_conf:.3f}")
             
             return {
                 "male": male_p,

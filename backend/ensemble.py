@@ -7,6 +7,7 @@ with configurable risk thresholds and detailed explanations.
 
 import logging
 import numpy as np
+import numpy as np
 from typing import Dict, Optional, Any
 from config import settings, get_risk_level
 

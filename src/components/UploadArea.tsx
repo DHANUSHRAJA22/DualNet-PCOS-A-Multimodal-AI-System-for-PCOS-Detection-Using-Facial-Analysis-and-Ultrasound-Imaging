@@ -129,6 +129,7 @@ export function UploadArea({
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
+        onClick={!processedImage ? handleUploadClick : undefined}
       >
         <CardContent className="p-6">
           {!processedImage ? (
@@ -185,8 +186,28 @@ export function UploadArea({
                   size="icon"
                   className="absolute top-2 right-2 h-8 w-8 shadow-lg"
                   aria-label="Remove image"
-                >
-                  <X className="h-4 w-4" />
+                <div className="flex gap-2 justify-center">
+                  <Button
+                    onClick={handleUploadClick}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2"
+                  >
+                    <FileImage className="h-4 w-4" />
+                    Choose File
+                  </Button>
+                  <Button
+                    onClick={() => setShowCamera(true)}
+                    variant="outline"
+                    size="sm"
+                    className="flex items-center gap-2"
+                  >
+                    <Camera className="h-4 w-4" />
+                    Open Camera
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
                 </Button>
               </div>
               

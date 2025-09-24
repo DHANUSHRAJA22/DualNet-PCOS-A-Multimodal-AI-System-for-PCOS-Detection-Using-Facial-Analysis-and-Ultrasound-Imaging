@@ -106,6 +106,17 @@ echo "Testing CORS proxy with Pexels image:"
 curl -s "$BASE_URL/img-proxy?url=https://images.pexels.com/photos/1239291/pexels-photo-1239291.jpeg" \
     -o /dev/null -w "Status: %{http_code}, Size: %{size_download} bytes, Time: %{time_total}s\n"
 
+# Test 9: Gender detection
+echo ""
+echo "👤 Test 9: Gender detection..."
+if [ -f "$TEST_DIR/female_face.jpg" ]; then
+    echo "Gender detection results:"
+    curl -s -X POST "$BASE_URL/predict" \
+        -F "face_img=@$TEST_DIR/female_face.jpg" | jq '.modalities[] | select(.type=="face") | .gender'
+else
+    echo "⚠️  No test image for gender detection"
+fi
+
 echo ""
 echo "✅ cURL examples completed!"
 echo ""
@@ -115,7 +126,7 @@ echo "     • female_face.jpg - Clear frontal female face photo"
 echo "     • male_face.jpg - Clear frontal male face photo"
 echo "     • xray_sample.jpg - Pelvic X-ray image"
 echo "   - Check server logs for detailed processing information"
-echo "   - Visit http://127.0.0.1:5000/docs for interactive API documentation"
+echo "   - Visit http://127.0.0.1:8000/docs for interactive API documentation"
 echo "   - The structured response includes debug information and ROI details"
 echo "   - Legacy endpoint maintains backward compatibility"
 echo "   - All responses use consistent {ok: true/false} format"
