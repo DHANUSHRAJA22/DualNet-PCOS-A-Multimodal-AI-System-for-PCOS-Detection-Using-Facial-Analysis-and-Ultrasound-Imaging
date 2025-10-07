@@ -9,9 +9,27 @@ import os
 import glob
 from pathlib import Path
 from typing import Dict, List, Optional
-# config.py
-import os
-from pathlib import Path
+
+# YOLO model filename (already correct in your tree)
+YOLO_MODEL = os.getenv("YOLO_MODEL", "bestv8.pt")
+
+# Which YOLO classes imply PCOS-like findings
+YOLO_PCOS_CLASSES = ["cyst", "polycystic", "multiple_follicles", "enlarged_ovary"]
+
+# Optional per-class weights (keys must be lowercased labels as they appear in your model)
+YOLO_CLASS_WEIGHTS = {
+    "cyst": 1.0,
+    "polycystic": 1.0,
+    "multiple_follicles": 0.8,
+    "enlarged_ovary": 0.7,
+}
+
+# How strongly YOLO contributes to final probability
+YOLO_WEIGHT = float(os.getenv("YOLO_WEIGHT", 0.30))
+
+# Controls steepness of sigmoid used to convert YOLO evidence to probability
+YOLO_SIGMOID_ALPHA = float(os.getenv("YOLO_SIGMOID_ALPHA", 2.2))
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"

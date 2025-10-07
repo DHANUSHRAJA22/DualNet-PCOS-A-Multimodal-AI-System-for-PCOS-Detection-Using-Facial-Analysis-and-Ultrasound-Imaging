@@ -1,243 +1,192 @@
-import { useState } from 'react'
-import { motion } from 'framer-motion'
-import { TestTube, Download, Eye, Sparkles } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+// src/components/SampleImages.tsx
+import { useRef, useState } from 'react'
+import type { ProcessedImage } from '@/lib/image'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
-import { fixImageOrientation } from '@/lib/image'
-import type { ProcessedImage } from '@/lib/image'
-import { withBase } from '@/lib/api'
+import { ImageIcon, UploadCloud } from 'lucide-react'
 
-interface SampleImagesProps {
-  onSelectFaceSample: (processedImage: ProcessedImage) => void
-  onSelectXraySample: (processedImage: ProcessedImage) => void
+type Props = {
+  onSelectFaceSample?: (img: ProcessedImage) => void
+  onSelectXraySample?: (img: ProcessedImage) => void
 }
 
-const sampleImages = {
-  face: [
-    {
-      id: 'face-sample-1',
-      name: 'Sample Face 1',
-      description: 'Clear frontal face photo - Normal indicators',
-      url: 'https://images.pexels.com/photos/1239291/pexels-photo-1239291.jpeg?auto=compress&cs=tinysrgb&w=400',
-      expectedResult: 'Low Risk'
-    },
-    {
-      id: 'face-sample-2', 
-      name: 'Sample Face 2',
-      description: 'Professional headshot - Mixed indicators',
-      url: 'https://images.pexels.com/photos/1130626/pexels-photo-1130626.jpeg?auto=compress&cs=tinysrgb&w=400',
-      expectedResult: 'Moderate Risk'
-    }
-  ],
-  xray: [
-    {
-      id: 'xray-sample-1',
-      name: 'Sample X-ray 1', 
-      description: 'Pelvic X-ray - Normal morphology',
-      url: 'https://images.pexels.com/photos/7089020/pexels-photo-7089020.jpeg?auto=compress&cs=tinysrgb&w=400',
-      expectedResult: 'Low Risk'
-    },
-    {
-      id: 'xray-sample-2',
-      name: 'Sample X-ray 2',
-      description: 'Medical imaging - Complex patterns',
-      url: 'https://images.pexels.com/photos/7089021/pexels-photo-7089021.jpeg?auto=compress&cs=tinysrgb&w=400', 
-      expectedResult: 'High Risk'
-    }
-  ]
+type Sample = { url: string; title: string; subtitle?: string }
+
+// === Your actual files (from /public/samples/...) ===
+// Face
+const FACE_SAMPLES: Sample[] = [
+  { url: '/samples/face/44.jpg', title: 'Face sample', subtitle: 'neutral, front-facing' },
+  { url: '/samples/face/33.jpeg', title: 'Face sample', subtitle: 'good lighting' },
+  { url: '/samples/face/pimple-1658939057.jpg', title: 'Face sample', subtitle: 'no glasses' },
+]
+
+// X-ray
+const XRAY_SAMPLES: Sample[] = [
+  { url: '/samples/xray/img_0_182.jpg', title: 'X-ray sample', subtitle: 'pelvic AP view' },
+  { url: '/samples/xray/img_0_60.jpg', title: 'X-ray sample', subtitle: 'good contrast' },
+  // file name has spaces → URL-encoded when fetching
+  { url: '/samples/xray/Copy of img_0_9989.jpg', title: 'X-ray sample', subtitle: 'centered field' },
+]
+
+// ---- helpers ----
+function toProcessedImage(file: File): ProcessedImage {
+  const previewUrl = URL.createObjectURL(file)
+  return {
+    file,
+    previewUrl,
+    size: file.size,
+    mime: file.type || 'image/jpeg',
+  }
 }
 
-export function SampleImages({ onSelectFaceSample, onSelectXraySample }: SampleImagesProps) {
-  const [selectedPreview, setSelectedPreview] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState<string | null>(null)
+async function urlToProcessedImage(url: string): Promise<ProcessedImage> {
+  // encode only for fetching (images display fine with spaces in src)
+  const res = await fetch(encodeURI(url), { cache: 'no-store' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const blob = await res.blob()
+  const name = url.split('/').pop() || 'sample.jpg'
+  const file = new File([blob], name, { type: blob.type || 'image/jpeg' })
+  return toProcessedImage(file)
+}
 
-  const handleSelectSample = async (type: 'face' | 'xray', sample: typeof sampleImages.face[0]) => {
-    setIsLoading(sample.id)
-    
+// ---- component ----
+export function SampleImages({ onSelectFaceSample, onSelectXraySample }: Props) {
+  const [loadingKey, setLoadingKey] = useState<string | null>(null)
+  const faceInputRef = useRef<HTMLInputElement | null>(null)
+  const xrayInputRef = useRef<HTMLInputElement | null>(null)
+
+  const pickUrl = async (kind: 'face' | 'xray', url: string) => {
     try {
-      // Use image proxy to avoid CORS issues
-      const proxyUrl = withBase(`/img-proxy?url=${encodeURIComponent(sample.url)}`)
-      const response = await fetch(proxyUrl)
-      if (!response.ok) {
-        throw new Error('Failed to fetch sample image')
-      }
-      
-      const blob = await response.blob()
-      
-      // Create a File object
-      const file = new File([blob], `${sample.name.toLowerCase().replace(/\s+/g, '-')}.jpg`, {
-        type: 'image/jpeg',
-        lastModified: Date.now(),
-      })
-
-      // Process the image properly using the same function as upload
-      const processedImage = await fixImageOrientation(file)
-
-      if (type === 'face') {
-        onSelectFaceSample(processedImage)
-        toast.success(`${sample.name} loaded successfully`)
+      setLoadingKey(`${kind}:${url}`)
+      const img = await urlToProcessedImage(url)
+      if (kind === 'face') {
+        onSelectFaceSample?.(img)
+        toast.success('Face sample selected')
       } else {
-        onSelectXraySample(processedImage)
-        toast.success(`${sample.name} loaded successfully`)
+        onSelectXraySample?.(img)
+        toast.success('X-ray sample selected')
       }
-    } catch (error) {
-      toast.error(`Failed to load sample image: ${error instanceof Error ? error.message : 'Unknown error'}`)
-      console.error('Sample image loading error:', error)
+    } catch (e: any) {
+      toast.error(`Failed to load sample: ${e?.message || e}`)
     } finally {
-      setIsLoading(null)
+      setLoadingKey(null)
     }
   }
 
+  const pickLocal = (kind: 'face' | 'xray', files: FileList | null) => {
+    if (!files?.length) return
+    const file = files[0]
+    const max = 5 * 1024 * 1024
+    if (file.size > max) {
+      toast.error(`File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Max 5MB.`)
+      return
+    }
+    const img = toProcessedImage(file)
+    if (kind === 'face') {
+      onSelectFaceSample?.(img)
+      toast.success('Face image imported')
+    } else {
+      onSelectXraySample?.(img)
+      toast.success('X-ray image imported')
+    }
+  }
+
+  const Tile = ({ s, kind }: { s: Sample; kind: 'face' | 'xray' }) => (
+    <button
+      onClick={() => pickUrl(kind, s.url)}
+      className="relative group rounded-lg overflow-hidden border border-dashed border-slate-200 bg-slate-50/60 hover:bg-slate-50 hover:shadow-md transition"
+      title="Click to use this sample"
+    >
+      <img
+        src={s.url}
+        alt={s.title}
+        className="aspect-square object-cover w-full group-hover:scale-105 transition-transform duration-200"
+        loading="lazy"
+      />
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-[11px] text-slate-500 select-none pointer-events-none">
+        <div className="font-medium text-slate-700">{s.title}</div>
+        {s.subtitle && <div className="opacity-70">{s.subtitle}</div>}
+      </div>
+      {loadingKey === `${kind}:${s.url}` && (
+        <div className="absolute inset-0 grid place-items-center bg-white/70 text-sm">Loading…</div>
+      )}
+    </button>
+  )
+
   return (
-    <Card className="border-2 border-purple-200 bg-gradient-to-br from-purple-50 to-indigo-50">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <TestTube className="h-5 w-5 text-purple-600" />
-          Try Sample Images
-          <Badge className="ml-auto bg-gradient-to-r from-purple-500 to-indigo-500 text-white">
-            <Sparkles className="h-3 w-3 mr-1" />
-            Demo Mode
-          </Badge>
-        </CardTitle>
-      </CardHeader>
-      
-      <CardContent className="space-y-6">
-        <p className="text-sm text-slate-600">
-          Test the analyzer with pre-approved sample images. No personal data required.
-        </p>
+    <div className="space-y-8">
+      <Card className="border-0 shadow-vibrant-lg">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ImageIcon className="w-5 h-5" />
+            Sample Images
+            <Badge variant="secondary" className="ml-2">Click to use</Badge>
+          </CardTitle>
+        </CardHeader>
 
-        {/* Face Samples */}
-        <div className="space-y-3">
-          <h4 className="font-semibold text-slate-800">Facial Analysis Samples</h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {sampleImages.face.map((sample) => (
-              <motion.div
-                key={sample.id}
-                whileHover={{ scale: 1.02 }}
-                className="bg-white/70 p-3 rounded-lg border border-purple-200 hover:border-purple-300 transition-all"
-              >
-                <div className="flex items-center gap-3">
-                  <img
-                    src={sample.url}
-                    alt={sample.name}
-                    className="w-12 h-12 rounded-lg object-cover"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm text-slate-800">{sample.name}</div>
-                    <div className="text-xs text-slate-600 truncate">{sample.description}</div>
-                    <Badge variant="outline" className="text-xs mt-1">
-                      Expected: {sample.expectedResult}
-                    </Badge>
-                  </div>
-                  <div className="flex gap-1">
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                          <Eye className="h-3 w-3" />
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="max-w-md">
-                        <DialogHeader>
-                          <DialogTitle>{sample.name}</DialogTitle>
-                        </DialogHeader>
-                        <img
-                          src={sample.url}
-                          alt={sample.name}
-                          className="w-full rounded-lg"
-                        />
-                        <p className="text-sm text-slate-600">{sample.description}</p>
-                      </DialogContent>
-                    </Dialog>
-                    <Button
-                      onClick={() => handleSelectSample('face', sample)}
-                      disabled={isLoading === sample.id}
-                      size="sm"
-                      className="h-8 px-2 text-xs bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600"
-                    >
-                      {isLoading === sample.id ? (
-                        <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" />
-                      ) : (
-                        <Download className="h-3 w-3" />
-                      )}
-                    </Button>
-                  </div>
-                </div>
-              </motion.div>
-            ))}
+        <CardContent className="space-y-10">
+          {/* Face */}
+          <section>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm font-medium text-slate-700">Face</div>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={faceInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => pickLocal('face', e.target.files)}
+                />
+                <Button variant="outline" size="sm" onClick={() => faceInputRef.current?.click()}>
+                  <UploadCloud className="w-4 h-4 mr-1" />
+                  Add from PC
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {FACE_SAMPLES.map((s) => (
+                <Tile key={s.url} s={s} kind="face" />
+              ))}
+            </div>
+          </section>
+
+          {/* X-ray */}
+          <section>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm font-medium text-slate-700">X-ray</div>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={xrayInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => pickLocal('xray', e.target.files)}
+                />
+                <Button variant="outline" size="sm" onClick={() => xrayInputRef.current?.click()}>
+                  <UploadCloud className="w-4 h-4 mr-1" />
+                  Add from PC
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {XRAY_SAMPLES.map((s) => (
+                <Tile key={s.url} s={s} kind="xray" />
+              ))}
+            </div>
+          </section>
+
+          <div className="text-right">
+            <Button
+              variant="outline"
+              onClick={() => window.open('/samples/', '_blank', 'noopener,noreferrer')}
+            >
+              Open samples folder
+            </Button>
           </div>
-        </div>
-
-        {/* X-ray Samples */}
-        <div className="space-y-3">
-          <h4 className="font-semibold text-slate-800">X-ray Analysis Samples</h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {sampleImages.xray.map((sample) => (
-              <motion.div
-                key={sample.id}
-                whileHover={{ scale: 1.02 }}
-                className="bg-white/70 p-3 rounded-lg border border-purple-200 hover:border-purple-300 transition-all"
-              >
-                <div className="flex items-center gap-3">
-                  <img
-                    src={sample.url}
-                    alt={sample.name}
-                    className="w-12 h-12 rounded-lg object-cover"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm text-slate-800">{sample.name}</div>
-                    <div className="text-xs text-slate-600 truncate">{sample.description}</div>
-                    <Badge variant="outline" className="text-xs mt-1">
-                      Expected: {sample.expectedResult}
-                    </Badge>
-                  </div>
-                  <div className="flex gap-1">
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                          <Eye className="h-3 w-3" />
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="max-w-md">
-                        <DialogHeader>
-                          <DialogTitle>{sample.name}</DialogTitle>
-                        </DialogHeader>
-                        <img
-                          src={sample.url}
-                          alt={sample.name}
-                          className="w-full rounded-lg"
-                        />
-                        <p className="text-sm text-slate-600">{sample.description}</p>
-                      </DialogContent>
-                    </Dialog>
-                    <Button
-                      onClick={() => handleSelectSample('xray', sample)}
-                      disabled={isLoading === sample.id}
-                      size="sm"
-                      className="h-8 px-2 text-xs bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600"
-                    >
-                      {isLoading === sample.id ? (
-                        <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" />
-                      ) : (
-                        <Download className="h-3 w-3" />
-                      )}
-                    </Button>
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-          <p className="text-xs text-amber-800">
-            <strong>Note:</strong> Sample images are for demonstration purposes only. 
-            Results may not reflect actual medical conditions.
-          </p>
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </div>
   )
 }

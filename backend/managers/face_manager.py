@@ -1,807 +1,416 @@
+# backend/managers/face_manager.py
 """
-Face analysis manager for gender detection and PCOS classification
+Face analysis manager for gender detection and PCOS classification.
 
-Handles automatic discovery and loading of all facial analysis models with
-dynamic ensemble inference, proper label mapping, and robust error handling.
+- Robust model loading & validation
+- Detect/avoid double-preprocessing (Lambda/Rescaling/Normalization)
+- Correct per-backbone preprocessing
+- Stable ensemble payload: {'method','score','models_used','weights'}
 """
 
+from __future__ import annotations
+
+import io
+import json
+import logging
 import os
 import uuid
-import logging
-import json
-import h5py
-from typing import Dict, Optional, Any, Tuple, List
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Callable
+
 import numpy as np
 from PIL import Image
-import io
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+import tensorflow as tf  # noqa: E402
+
 from fastapi import UploadFile
-from typing import Dict, List, Any, Optional
 
-# Import TensorFlow and suppress warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-import tensorflow as tf
-
-from config import (
-    settings, FACE_MODELS_DIR, UPLOADS_DIR, get_risk_level,
-    get_available_face_models, load_model_labels, get_ensemble_weights, normalize_weights
+from config import (  # noqa: E402
+    FACE_MODELS_DIR,
+    UPLOADS_DIR,
+    get_available_face_models,
+    get_ensemble_weights,
+    get_risk_level,
+    load_model_labels,
+    normalize_weights,
+    settings,
 )
-from utils.validators import validate_image, get_safe_filename
+from utils.validators import get_safe_filename, validate_image  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# Model reliability blacklist - models known to give poor/opposite predictions
 UNRELIABLE_MODELS = {
-    'pcos_vgg16',  # Known to give opposite predictions
-    'vgg16_weights_tf_dim_ordering_tf_kernels',  # Corrupted weights
-    'resnet50_weights_tf_dim_ordering_tf_kernels',  # Corrupted weights
-    'pcos_resnet50',  # Layer mismatch issues
+    "pcos_vgg16",
+    "vgg16_weights_tf_dim_ordering_tf_kernels",
+    "resnet50_weights_tf_dim_ordering_tf_kernels",
+    "pcos_resnet50",
 }
 
-# Minimum validation accuracy threshold for model inclusion
-MIN_MODEL_ACCURACY = 0.60
+# ---------------- TF helpers ----------------
 
-def read_gender_labels(labels_path: str) -> List[str]:
-    """
-    Read gender labels from file with proper error handling
-    
-    Args:
-        labels_path: Path to gender.labels.txt file
-        
-    Returns:
-        List of gender labels in correct order
-    """
-    try:
-        if os.path.exists(labels_path):
-            with open(labels_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                
-            # Try JSON format first
-            if content.startswith('['):
-                labels = json.loads(content)
-                if isinstance(labels, list) and len(labels) >= 2:
-                    return [str(label).strip().lower() for label in labels]
-            
-            # Try line-separated format
-            lines = [line.strip().lower() for line in content.split('\n') if line.strip()]
-            if len(lines) >= 2:
-                return lines
-                
-        logger.warning(f"Could not read valid labels from {labels_path}, using defaults")
-        
-    except Exception as e:
-        logger.warning(f"Error reading gender labels from {labels_path}: {str(e)}")
-    
-    # Default fallback
-    return ['female', 'male']
-
-def create_gender_mapping(labels: List[str]) -> Dict[str, int]:
-    """
-    Create gender mapping from labels ensuring correct index assignment
-    
-    Args:
-        labels: List of gender labels
-        
-    Returns:
-        Dictionary mapping gender names to indices
-    """
-    mapping = {}
-    
-    for i, label in enumerate(labels):
-        if 'female' in label.lower():
-            mapping['female'] = i
-        elif 'male' in label.lower():
-            mapping['male'] = i
-    
-    # Ensure both genders are mapped
-    if 'female' not in mapping:
-        mapping['female'] = 0
-    if 'male' not in mapping:
-        mapping['male'] = 1 if 'female' in mapping and mapping['female'] == 0 else 0
-    
-    logger.info(f"Created gender mapping: {mapping} from labels: {labels}")
-    return mapping
-
-# Create compiled prediction functions to avoid retracing warnings
-@tf.function(reduce_retracing=True)
-def compiled_predict_gender(model, input_data):
-    """Compiled prediction function for gender model"""
-    return model(input_data, training=False)
 
 @tf.function(reduce_retracing=True)
-def compiled_predict_pcos(model, input_data):
-    """Compiled prediction function for PCOS models"""
-    return model(input_data, training=False)
+def _forward(model: tf.keras.Model, x: tf.Tensor) -> tf.Tensor:
+    return model(x, training=False)
 
-def load_model_with_fallback(model_path: str) -> Optional[tf.keras.Model]:
-    """
-    Load model with comprehensive fallback for various Keras issues
-    
-    Args:
-        model_path: Path to model file
-        
-    Returns:
-        Loaded model or None if failed
-    """
+
+def _load_model(path: str) -> Optional[tf.keras.Model]:
     try:
-        # Try normal loading first
-        model = tf.keras.models.load_model(model_path, compile=False)
-        logger.debug(f"Successfully loaded model normally: {model_path}")
-        return model
-        
+        return tf.keras.models.load_model(path, compile=False)
     except Exception as e:
-        if "batch_shape" in str(e) or "Unrecognized keyword arguments" in str(e):
-            logger.warning(f"Keras compatibility issue for {model_path}, trying fallback...")
-            
-            try:
-                # Try loading with custom objects
-                model = tf.keras.models.load_model(
-                    model_path, 
-                    compile=False,
-                    custom_objects={},
-                    safe_mode=False
-                )
-                logger.info(f"Fallback loading successful: {model_path}")
-                return model
-                
-            except Exception as fallback_e:
-                logger.error(f"All loading methods failed for {model_path}: {str(fallback_e)}")
-                return None
-        else:
-            logger.error(f"Model loading failed for {model_path}: {str(e)}")
-            return None
+        logger.error(f"[Face] Load failed for {path}: {e}")
+        return None
 
-def validate_model_output(model: tf.keras.Model, model_path: str) -> bool:
-    """
-    Validate model by running test prediction and checking output shape
-    
-    Args:
-        model: Loaded model
-        model_path: Path to model file for logging
-        
-    Returns:
-        True if model is valid, False otherwise
-    """
+
+def _sanity_predict(model: tf.keras.Model, path: str) -> bool:
     try:
-        # Get input shape from model
-        if hasattr(model, 'input_shape') and model.input_shape:
-            input_shape = model.input_shape[1:]  # Remove batch dimension
-        else:
-            input_shape = (224, 224, 3)  # Default
-        
-        # Create dummy input
-        dummy_input = np.random.random((1, *input_shape)).astype(np.float32)
-        
-        # Run prediction
-        prediction = model.predict(dummy_input, verbose=0)
-        
-        # Validate output shape and values
-        if prediction is None:
-            logger.error(f"Model {model_path} returned None prediction")
-            return False
-            
-        if len(prediction.shape) != 2:
-            logger.error(f"Model {model_path} returned invalid shape: {prediction.shape}")
-            return False
-            
-        if prediction.shape[1] not in [1, 2]:
-            logger.error(f"Model {model_path} returned unexpected number of classes: {prediction.shape[1]}")
-            return False
-            
-        if np.any(np.isnan(prediction)) or np.any(np.isinf(prediction)):
-            logger.error(f"Model {model_path} returned NaN or Inf values")
-            return False
-        
-        logger.debug(f"Model validation successful for {model_path}")
+        shp = model.input_shape
+        H, W, C = (int(shp[1]), int(shp[2]), int(shp[3])) if shp and len(shp) >= 4 else (224, 224, 3)
+        dummy = np.random.random((1, H, W, C)).astype("float32")
+        _ = model.predict(dummy, verbose=0)
         return True
-        
     except Exception as e:
-        logger.error(f"Model validation failed for {model_path}: {str(e)}")
+        logger.error(f"[Face] Validation failed for {path}: {e}")
         return False
 
-class FaceManager:
-    """
-    Enhanced face manager with robust gender detection and PCOS ensemble
-    
-    Features:
-    - Proper gender label mapping from gender.labels.txt
-    - Integration of new pcos_detector_158 model
-    - Automatic exclusion of unreliable models
-    - Robust ensemble with normalized weights
-    - Comprehensive error handling and logging
-    """
-    
-    def __init__(self):
-        """Initialize face manager"""
-        self.gender_model = None
-        self.gender_labels = []
-        self.gender_mapping = {}
-        self.pcos_models = {}
-        self.can_predict_gender = False
-        self.ensemble_weights = {}
-        self.loading_warnings = []
-        
-        # Model status tracking
-        self.model_status = {
-            "gender": {"loaded": False, "available": False, "error": None},
-            "face": {"loaded": False, "available": False, "error": None}
-        }
-        
-        # Load models at initialization
-        self._load_models()
-    
-    def can_lazy_load_gender(self) -> bool:
-        """Check if gender model can be lazy loaded"""
-        gender_path = FACE_MODELS_DIR / settings.GENDER_MODEL
-        return gender_path.exists() and gender_path.is_file()
-    
-    def can_lazy_load_pcos(self) -> bool:
-        """Check if any PCOS models can be lazy loaded"""
-        available_models = get_available_face_models()
-        # Filter out unreliable models
-        reliable_models = {k: v for k, v in available_models.items() if k not in UNRELIABLE_MODELS}
-        return len(reliable_models) > 0
-    
-    def _load_models(self) -> None:
-        """Load all facial analysis models with proper error handling"""
-        logger.info("Loading facial analysis models...")
-        
-        # Load gender classifier first
-        self._load_gender_model()
-        
-        # Load PCOS classification models
-        self._load_pcos_models()
-        
-        logger.info(f"Face manager initialized. Gender detection: {self.can_predict_gender}, "
-                   f"PCOS models loaded: {len(self.pcos_models)}")
-    
-    def _load_gender_model(self) -> None:
-        """Load gender classification model with proper label mapping"""
-        gender_path = FACE_MODELS_DIR / settings.GENDER_MODEL
-        labels_path = FACE_MODELS_DIR / "gender.labels.txt"
-        
-        self.model_status["gender"]["available"] = gender_path.exists()
-        
-        try:
-            if gender_path.exists():
-                # Load model
-                self.gender_model = load_model_with_fallback(str(gender_path))
-                
-                if self.gender_model is None:
-                    raise Exception("Failed to load gender model with all fallback methods")
-                
-                # Load and validate labels
-                self.gender_labels = read_gender_labels(str(labels_path))
-                self.gender_mapping = create_gender_mapping(self.gender_labels)
-                
-                # Validate model works
-                if validate_model_output(self.gender_model, str(gender_path)):
-                    self.can_predict_gender = True
-                    self.model_status["gender"]["loaded"] = True
-                    logger.info(f"✅ Loaded gender model with labels {self.gender_labels}")
-                    logger.info(f"Gender mapping: {self.gender_mapping}")
-                else:
-                    raise Exception("Gender model validation failed")
-                    
-            else:
-                logger.warning(f"Gender model not found: {gender_path}")
-                self.model_status["gender"]["error"] = "File not found"
-                
-        except Exception as e:
-            logger.error(f"Failed to load gender model: {str(e)}")
-            self.model_status["gender"]["error"] = str(e)
-            self.loading_warnings.append(f"Gender model failed to load: {str(e)}")
-    
-    def _load_pcos_models(self) -> None:
-        """Load PCOS classification models with reliability filtering"""
-        loaded_count = 0
-        skipped_count = 0
-        
-        # Get available models
-        available_models = get_available_face_models()
-        logger.info(f"Found {len(available_models)} potential face PCOS models")
-        
-        if not available_models:
-            logger.warning("No face PCOS models found")
-            self.model_status["face"]["available"] = False
-            return
-        
-        # Get ensemble weights
-        self.ensemble_weights = get_ensemble_weights('face')
-        
-        # Priority loading: Load new detector first
-        priority_models = ['pcos_detector_158']
-        regular_models = []
-        
-        for model_name in available_models.keys():
-            if model_name in priority_models:
-                continue  # Handle separately
-            elif model_name in UNRELIABLE_MODELS:
-                logger.info(f"⏭️  Skipping unreliable model: {model_name}")
-                skipped_count += 1
-                continue
-            else:
-                regular_models.append(model_name)
-        
-        # Load priority models first
-        for model_name in priority_models:
-            if model_name in available_models:
-                success = self._load_single_pcos_model(model_name, available_models[model_name])
-                if success:
-                    loaded_count += 1
-                    logger.info(f"✅ Loaded PCOS model: {model_name}")
-        
-        # Load other reliable models
-        for model_name in regular_models:
-            if model_name in available_models:
-                success = self._load_single_pcos_model(model_name, available_models[model_name])
-                if success:
-                    loaded_count += 1
-                else:
-                    skipped_count += 1
-        
-        # Normalize weights for loaded models
-        if self.pcos_models:
-            model_names = list(self.pcos_models.keys())
-            current_weights = {name: self.pcos_models[name]["weight"] for name in model_names}
-            normalized_weights = normalize_weights(current_weights, model_names)
-            
-            for model_name, weight in normalized_weights.items():
-                if model_name in self.pcos_models:
-                    self.pcos_models[model_name]["weight"] = weight
-            
-            logger.info(f"✅ Normalized ensemble weights: {normalized_weights}")
-            logger.info(f"📊 Models included in ensemble: {list(self.pcos_models.keys())}")
-        
-        self.model_status["face"]["loaded"] = loaded_count > 0
-        self.model_status["face"]["available"] = len(available_models) > 0
-        
-        logger.info(f"✅ Successfully loaded {loaded_count} face PCOS models (skipped {skipped_count} unreliable)")
-        
-        if loaded_count == 0:
-            logger.warning("⚠️  No reliable face PCOS models could be loaded")
-            self.model_status["face"]["error"] = "No reliable models loaded"
-            self.loading_warnings.append("No reliable face PCOS models available")
-    
-    def _load_single_pcos_model(self, model_name: str, model_path: Path) -> bool:
-        """
-        Load a single PCOS model with validation
-        
-        Args:
-            model_name: Name of the model
-            model_path: Path to model file
-            
-        Returns:
-            True if loaded successfully, False otherwise
-        """
-        try:
-            logger.info(f"Loading PCOS model: {model_name}")
-            
-            # Load model with fallback
-            model = load_model_with_fallback(str(model_path))
-            
-            if model is None:
-                logger.error(f"Failed to load model {model_name}")
-                return False
-            
-            # Validate model works correctly
-            if not validate_model_output(model, str(model_path)):
-                logger.error(f"Model validation failed for {model_name}")
-                return False
-            
-            # Get model weight (prioritize new detector)
-            if model_name == 'pcos_detector_158':
-                weight = 1.0  # High weight for new trained model
-            else:
-                weight = self.ensemble_weights.get(model_name, 0.5)  # Lower weight for older models
-            
-            # Load labels
-            labels = load_model_labels(model_path)
-            
-            # Get input shape
-            input_shape = self._get_model_input_shape(model)
-            
-            # Store model data
-            self.pcos_models[model_name] = {
-                "model": model,
-                "path": str(model_path),
-                "weight": weight,
-                "labels": labels,
-                "input_shape": input_shape,
-                "validated": True
-            }
-            
-            logger.info(f"✅ Loaded PCOS model {model_name}: weight={weight}, input_shape={input_shape}")
+
+# ---------------- Gender utils ----------------
+
+
+def _read_gender_labels(p: Path) -> List[str]:
+    try:
+        if p.exists():
+            s = p.read_text(encoding="utf-8").strip()
+            if s.startswith("["):
+                arr = json.loads(s)
+                if isinstance(arr, list) and len(arr) >= 2:
+                    return [str(x).strip().lower() for x in arr]
+            lines = [ln.strip().lower() for ln in s.splitlines() if ln.strip()]
+            if len(lines) >= 2:
+                return lines
+    except Exception as e:
+        logger.warning(f"[Face] gender labels read error: {e}")
+    return ["female", "male"]
+
+
+def _gender_map(labels: List[str]) -> Dict[str, int]:
+    m: Dict[str, int] = {}
+    for i, lab in enumerate(labels):
+        if "female" in lab:
+            m["female"] = i
+        if "male" in lab:
+            m["male"] = i
+    if "female" not in m:
+        m["female"] = 0
+    if "male" not in m:
+        m["male"] = 1 if m["female"] == 0 else 0
+    return m
+
+
+# ---------------- Preprocess detection ----------------
+
+
+def _first_layers(model: tf.keras.Model, k: int = 3):
+    try:
+        return model.layers[: min(k, len(model.layers))]
+    except Exception:
+        return []
+
+
+def _has_built_in_preproc(model: tf.keras.Model) -> bool:
+    """Heuristic: if first 3 layers include Lambda/Rescaling/Normalization or names hint at preprocessing."""
+    for lyr in _first_layers(model, 3):
+        name = (getattr(lyr, "name", "") or "").lower()
+        cls = lyr.__class__.__name__.lower()
+        if cls in {"lambda", "rescaling", "normalization"}:
             return True
-            
-        except Exception as e:
-            logger.error(f"Failed to load PCOS model {model_name}: {str(e)}")
-            self.loading_warnings.append(f"PCOS model {model_name} failed to load: {str(e)}")
-            return False
-    
-    def _get_model_input_shape(self, model: tf.keras.Model) -> Tuple[int, int]:
-        """
-        Get input shape from loaded model
-        
-        Args:
-            model: Loaded TensorFlow model
-            
-        Returns:
-            Tuple of (height, width) for image preprocessing
-        """
+        if any(tok in name for tok in ("preprocess", "rescale", "norm")):
+            return True
+    return False
+
+
+def _pick_app_preproc(model_name: str) -> Callable[[np.ndarray], np.ndarray]:
+    n = model_name.lower()
+    try:
+        if "efficientnet-b" in n:
+            from tensorflow.keras.applications.efficientnet import preprocess_input as eff_pre
+
+            return eff_pre  # 0..255 -> [-1,1]
+        if "resnet50" in n:
+            from tensorflow.keras.applications.resnet50 import preprocess_input as rn_pre
+
+            return rn_pre  # RGB->BGR + mean sub
+        if "vgg16" in n:
+            from tensorflow.keras.applications.vgg16 import preprocess_input as vgg_pre
+
+            return vgg_pre  # RGB->BGR + mean sub
+    except Exception:
+        pass
+    return lambda a: a / 255.0  # fallback
+
+
+# ---------------- Manager ----------------
+
+
+class FaceManager:
+    def __init__(self) -> None:
+        self.gender_model: Optional[tf.keras.Model] = None
+        self.gender_labels: List[str] = []
+        self.gender_mapping: Dict[str, int] = {}
+
+        # name -> dict(meta)
+        self.pcos_models: Dict[str, Dict[str, Any]] = {}
+        self.ensemble_weights: Dict[str, float] = {}
+        self.loading_warnings: List[str] = []
+
+        logger.info("[Face] Loading gender + PCOS models...")
+        self._load_gender()
+        self._load_pcos()
+        logger.info(f"[Face] Ready. gender={self.gender_model is not None}, pcos_models={len(self.pcos_models)}")
+
+    # ---- health helpers
+
+    def can_lazy_load_gender(self) -> bool:
+        return (FACE_MODELS_DIR / settings.GENDER_MODEL).exists()
+
+    def can_lazy_load_pcos(self) -> bool:
+        avail = get_available_face_models()
+        return any(k not in UNRELIABLE_MODELS for k in avail)
+
+    def get_model_status(self) -> Dict[str, Any]:
+        out = {
+            "gender": {"loaded": self.gender_model is not None, "labels": self.gender_labels},
+            "pcos_models": {},
+        }
+        for n, d in self.pcos_models.items():
+            out["pcos_models"][n] = {
+                "loaded": True,
+                "path": d["path"],
+                "weight": d["weight"],
+                "input_shape": d.get("input_hw"),
+                "pos_idx": d.get("pos_idx"),
+                "preproc": d.get("preproc_name"),
+            }
+        return out
+
+    def get_loading_warnings(self) -> List[str]:
+        return list(self.loading_warnings)
+
+    # ---- warmup
+
+    async def warmup(self) -> None:
         try:
-            if hasattr(model, 'input_shape') and model.input_shape:
-                shape = model.input_shape
-                if len(shape) >= 3:
-                    return (shape[1], shape[2])  # (height, width)
+            if self.gender_model is not None:
+                self.gender_model.predict(np.zeros((1, 224, 224, 3), "float32"), verbose=0)
+            for d in self.pcos_models.values():
+                H, W = d.get("input_hw", (224, 224))
+                d["model"].predict(np.zeros((1, H, W, 3), "float32"), verbose=0)
         except Exception:
             pass
-        
-        # Default to standard size
-        return settings.FACE_IMAGE_SIZE
-    
-    def _preprocess_image(self, image_bytes: bytes, target_size: Tuple[int, int]) -> np.ndarray:
-        """
-        Preprocess image for model inference with consistent shape
-        
-        Args:
-            image_bytes: Raw image bytes
-            target_size: Target size (height, width)
-            
-        Returns:
-            Preprocessed image array with shape (1, height, width, 3)
-        """
-        try:
-            # Open image from bytes
-            image = Image.open(io.BytesIO(image_bytes))
-            
-            # Convert to RGB if needed
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # Resize with high-quality resampling (PIL expects width, height)
-            pil_size = (target_size[1], target_size[0])  # Convert to (width, height)
-            image = image.resize(pil_size, Image.Resampling.LANCZOS)
-            
-            # Convert to numpy array and normalize to [0,1]
-            img_array = np.array(image, dtype=np.float32) / 255.0
-            
-            # Add batch dimension - ensure shape is (1, height, width, 3)
-            img_array = np.expand_dims(img_array, axis=0)
-            
-            return img_array
-            
-        except Exception as e:
-            logger.error(f"Image preprocessing failed: {str(e)}")
-            raise
-    
-    async def predict_gender(self, image_bytes: bytes) -> Dict[str, Any]:
-        """
-        Predict gender from facial image with proper label mapping
-        
-        Args:
-            image_bytes: Preprocessed image bytes
-            
-        Returns:
-            Dictionary with gender prediction results
-        """
-        if not self.can_predict_gender or self.gender_model is None:
-            logger.debug("Gender model not available, defaulting to female")
-            return {
-                "male": 0.0,
-                "female": 1.0,
-                "label": "female",
-                "confidence": 1.0
-            }
-        
-        try:
-            # Use gender model specific input size
-            image_array = self._preprocess_image(image_bytes, settings.GENDER_IMAGE_SIZE)
-            
-            # Run prediction with compiled function
-            try:
-                prediction = compiled_predict_gender(self.gender_model, image_array)
-                prediction = prediction.numpy()
-            except Exception:
-                # Fallback to regular predict
-                prediction = self.gender_model.predict(image_array, verbose=0)
-            
-            # Handle prediction output - ensure we have proper shape
-            probs = prediction[0] if len(prediction.shape) > 1 else prediction
-            
-            # Ensure we have the right number of outputs
-            if len(probs.shape) == 0 or probs.shape[0] < 2:
-                # Single output or insufficient outputs - handle as binary
-                if len(probs.shape) == 0:
-                    single_prob = float(probs)
-                else:
-                    single_prob = float(probs[0])
-                
-                # Map to gender based on labels
-                if len(self.gender_labels) >= 2:
-                    if self.gender_labels[0].lower() == 'female':
-                        female_prob = single_prob
-                        male_prob = 1.0 - single_prob
-                    else:
-                        male_prob = single_prob
-                        female_prob = 1.0 - single_prob
-                else:
-                    # Default mapping
-                    female_prob = single_prob
-                    male_prob = 1.0 - single_prob
-            else:
-                # Two or more outputs - use mapping
-                female_idx = self.gender_mapping.get('female', 0)
-                male_idx = self.gender_mapping.get('male', 1)
-                
-                # Ensure indices are within bounds
-                if female_idx < len(probs) and male_idx < len(probs):
-                    female_prob = float(probs[female_idx])
-                    male_prob = float(probs[male_idx])
-                else:
-                    logger.error(f"Gender mapping indices out of bounds: female_idx={female_idx}, male_idx={male_idx}, probs_shape={probs.shape}")
-                    # Fallback to first two outputs
-                    female_prob = float(probs[0]) if len(probs) > 0 else 0.5
-                    male_prob = float(probs[1]) if len(probs) > 1 else 1.0 - female_prob
-            
-            # Determine predicted label and confidence
-            if female_prob > male_prob:
-                pred_label = "female"
-                confidence = female_prob
-            else:
-                pred_label = "male"
-                confidence = male_prob
-            
-            logger.info(f"Gender prediction - Female: {female_prob:.3f}, Male: {male_prob:.3f}, "
-                       f"Label: {pred_label}, Confidence: {confidence:.3f}")
-            
-            return {
-                "male": male_prob,
-                "female": female_prob,
-                "label": pred_label,
-                "confidence": confidence
-            }
-            
-        except Exception as e:
-            logger.error(f"Gender prediction failed: {str(e)}")
-            # Return safe default
-            return {
-                "male": 0.0,
-                "female": 1.0,
-                "label": "female",
-                "confidence": 1.0
-            }
-    
-    async def predict_pcos_ensemble(self, image_bytes: bytes) -> Dict[str, Any]:
-        """
-        Predict PCOS using ensemble of reliable models
-        
-        Args:
-            image_bytes: Preprocessed image bytes
-            
-        Returns:
-            Dictionary with ensemble prediction results
-        """
-        if not self.pcos_models:
-            return {
-                "per_model": {},
-                "ensemble_score": 0.0,
-                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
-                "labels": ["non_pcos", "pcos"]
-            }
-        
-        per_model_scores = {}
-        successful_predictions = 0
-        
-        # Run prediction on each loaded model
-        for model_name, model_data in self.pcos_models.items():
-            try:
-                model = model_data["model"]
-                input_shape = model_data.get("input_shape", settings.FACE_IMAGE_SIZE)
-                
-                # Preprocess image with correct size for this model
-                image_array = self._preprocess_image(image_bytes, input_shape)
-                
-                # Run prediction with compiled function
-                try:
-                    prediction = compiled_predict_pcos(model, image_array)
-                    prediction = prediction.numpy()
-                except Exception:
-                    # Fallback to regular predict
-                    prediction = model.predict(image_array, verbose=0)
-                
-                # Extract PCOS probability with proper shape handling
-                probs = prediction[0] if len(prediction.shape) > 1 else prediction
-                
-                if len(probs.shape) == 0 or probs.shape[0] == 1:
-                    # Single output (sigmoid) - treat as PCOS probability
-                    pcos_prob = float(probs) if len(probs.shape) == 0 else float(probs[0])
-                else:
-                    # Multiple outputs (softmax) - take PCOS class (index 1)
-                    if probs.shape[0] >= 2:
-                        pcos_prob = float(probs[1])
-                    else:
-                        logger.warning(f"Unexpected output shape for {model_name}: {probs.shape}")
-                        pcos_prob = float(probs[0])
-                
-                # Validate probability is in valid range
-                pcos_prob = max(0.0, min(1.0, pcos_prob))
-                
-                per_model_scores[model_name] = pcos_prob
-                successful_predictions += 1
-                logger.debug(f"PCOS {model_name} prediction: {pcos_prob:.3f}")
-                
-            except Exception as e:
-                logger.error(f"PCOS prediction failed for {model_name}: {str(e)}")
-                self.loading_warnings.append(f"PCOS model {model_name} prediction failed: {str(e)}")
+
+    # ---- loading
+
+    def _load_gender(self) -> None:
+        p = FACE_MODELS_DIR / settings.GENDER_MODEL
+        if not p.exists():
+            self.loading_warnings.append(f"Gender model not found: {p.name}")
+            return
+        m = _load_model(str(p))
+        if not m or not _sanity_predict(m, str(p)):
+            self.loading_warnings.append(f"Gender model failed: {p.name}")
+            return
+        labels = _read_gender_labels(FACE_MODELS_DIR / "gender.labels.txt")
+        self.gender_model = m
+        self.gender_labels = labels
+        self.gender_mapping = _gender_map(labels)
+        logger.info(f"[Face] ✅ Gender loaded. labels={labels} mapping={self.gender_mapping}")
+
+    def _load_pcos(self) -> None:
+        avail = get_available_face_models()
+        logger.info(f"[Face] Found {len(avail)} candidate PCOS models")
+        self.ensemble_weights = get_ensemble_weights("face") or {}
+
+        for name, path in avail.items():
+            if name in UNRELIABLE_MODELS:
+                logger.info(f"[Face] Skipping unreliable model: {name}")
                 continue
-        
-        if not per_model_scores:
-            self.loading_warnings.append("No PCOS models available for prediction")
-            return {
-                "per_model": {},
-                "ensemble_score": 0.0,
-                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
-                "labels": ["non_pcos", "pcos"]
-            }
-        
-        # Calculate weighted ensemble score
-        total_weight = 0.0
-        weighted_sum = 0.0
-        weights_used = {}
-        
-        for model_name, score in per_model_scores.items():
-            weight = self.pcos_models[model_name]["weight"]
-            weighted_sum += score * weight
-            total_weight += weight
-            weights_used[model_name] = weight
-        
-        ensemble_score = weighted_sum / total_weight if total_weight > 0 else 0.0
-        
-        # Build ensemble metadata
-        ensemble_meta = {
-            "method": "weighted_average",
-            "score": float(ensemble_score),
-            "models_used": successful_predictions,
-            "weights_used": weights_used
-        }
-        
-        logger.info(f"✅ Ensemble prediction: {ensemble_score:.3f} from {successful_predictions} models")
-        
-        return {
-            "per_model": per_model_scores,
-            "ensemble_score": float(ensemble_score),
-            "ensemble": ensemble_meta,
-            "labels": ["non_pcos", "pcos"]
-        }
-    
-    async def process_face_image(self, file: UploadFile) -> Dict[str, Any]:
-        """
-        Process uploaded face image and run complete analysis pipeline
-        
-        Args:
-            file: Uploaded face image file
-            
-        Returns:
-            Dictionary with complete face analysis results
-        """
-        # Validate uploaded file
-        image_bytes = await validate_image(file, max_mb=settings.MAX_UPLOAD_MB)
-        
-        # Generate unique filename and save
-        file_id = str(uuid.uuid4())[:8]
-        safe_filename = get_safe_filename(file.filename)
-        name, ext = os.path.splitext(safe_filename)
-        filename = f"face-{file_id}-{name}.jpg"
-        file_path = UPLOADS_DIR / filename
-        
-        # Save uploaded file
-        with open(file_path, 'wb') as f:
-            f.write(image_bytes)
-        
-        try:
-            # Run gender prediction
-            gender_result = await self.predict_gender(image_bytes)
-            
-            # Initialize result structure
-            result = {
-                "face_img": f"/static/uploads/{filename}",
-                "gender": gender_result,
-                "face_scores": [],
-                "face_pred": None,
-                "face_risk": "unknown",
-                "per_model": {},
-                "ensemble_score": 0.0,
-                "ensemble": {"method": "none", "score": 0.0, "models_used": 0},
-                "models_used": []
-            }
-            
-            # Check if we should skip PCOS analysis for males with high confidence
-            gender_confidence_threshold = 0.7
-            should_skip = (gender_result["label"] == "male" and 
-                          gender_result.get("confidence", 0) >= gender_confidence_threshold)
-            
-            if should_skip:
-                result["face_pred"] = "Male face detected - PCOS analysis not applicable"
-                result["face_scores"] = []
-                result["face_risk"] = "not_applicable"
-                logger.info(f"Skipping PCOS analysis for male face (confidence: {gender_result['confidence']:.3f})")
-                return result
-            
-            # Run PCOS prediction for females or uncertain gender
-            if not self.pcos_models:
-                result["face_pred"] = "No PCOS models available for analysis"
-                result["face_scores"] = []
-                result["face_risk"] = "unknown"
-                self.loading_warnings.append("No face PCOS models loaded")
-                return result
-            
-            # Run ensemble PCOS prediction
-            pcos_results = await self.predict_pcos_ensemble(image_bytes)
-            
-            if pcos_results["per_model"]:
-                # Store detailed results
-                result["per_model"] = pcos_results["per_model"]
-                result["models_used"] = list(pcos_results["per_model"].keys())
-                result["ensemble"] = pcos_results["ensemble"]
-                
-                # Get ensemble score
-                ensemble_score = pcos_results["ensemble_score"]
-                result["ensemble_score"] = ensemble_score
-                
-                # Convert to face_scores format (non_pcos, pcos probabilities)
-                non_pcos_prob = 1.0 - ensemble_score
-                result["face_scores"] = [float(non_pcos_prob), float(ensemble_score)]
-                
-                # Determine risk level and prediction text
-                risk_level = get_risk_level(ensemble_score)
-                result["face_risk"] = risk_level
-                
-                if risk_level == "high":
-                    result["face_pred"] = "High PCOS risk detected in facial analysis"
-                elif risk_level == "moderate":
-                    result["face_pred"] = "Moderate PCOS indicators detected in facial analysis"
-                else:
-                    result["face_pred"] = "Low PCOS risk - minimal indicators in facial analysis"
-                
-                logger.info(f"✅ Face analysis complete: {risk_level} risk, ensemble_score={ensemble_score:.3f}")
+
+            m = _load_model(str(path))
+            if not m or not _sanity_predict(m, str(path)):
+                self.loading_warnings.append(f"PCOS model failed: {name}")
+                continue
+
+            shp = m.input_shape
+            H, W = (int(shp[1]), int(shp[2])) if shp and len(shp) >= 4 else settings.FACE_IMAGE_SIZE
+
+            labels = load_model_labels(path) or ["non_pcos", "pcos"]
+            labels_l = [str(x).strip().lower() for x in labels]
+            pos_idx = labels_l.index("pcos") if "pcos" in labels_l else 1
+
+            # Detect built-in preprocessing to avoid double-preprocess
+            if _has_built_in_preproc(m):
+                preproc = lambda a: a  # passthrough
+                preproc_name = "passthrough (built-in preproc detected)"
             else:
-                result["face_pred"] = "PCOS analysis failed - no reliable predictions"
-                result["face_scores"] = []
-                result["face_risk"] = "unknown"
-                self.loading_warnings.append("No reliable PCOS predictions available")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Face processing failed: {str(e)}")
-            # Clean up file on error
-            if file_path.exists():
-                file_path.unlink()
-            raise
-    
-    def get_loading_warnings(self) -> List[str]:
-        """Get any warnings from model loading"""
-        return self.loading_warnings
-    
-    def get_model_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get current status of all face models"""
-        status = self.model_status.copy()
-        
-        # Add detailed model information
-        status["pcos_models"] = {}
-        for model_name, model_data in self.pcos_models.items():
-            status["pcos_models"][model_name] = {
-                "loaded": True,
-                "path": model_data["path"],
-                "weight": model_data["weight"],
-                "input_shape": model_data.get("input_shape"),
-                "validated": model_data.get("validated", False)
+                preproc = _pick_app_preproc(name)
+                preproc_name = getattr(preproc, "__name__", "custom_/255")
+
+            weight = float(self.ensemble_weights.get(name, 1.0))
+            self.pcos_models[name] = {
+                "model": m,
+                "path": str(path),
+                "labels": labels,
+                "pos_idx": int(pos_idx),
+                "weight": weight,
+                "input_hw": (H, W),
+                "preproc": preproc,
+                "preproc_name": preproc_name,
             }
-        
-        # Add gender model details
-        if self.can_predict_gender:
-            status["gender"]["labels"] = self.gender_labels
-            status["gender"]["mapping"] = self.gender_mapping
-        
-        return status
+            logger.info(
+                f"[Face] ✅ Loaded {name} ({H}x{W}), labels={labels}, pos_idx={pos_idx}, "
+                f"weight={weight}, preproc={preproc_name}"
+            )
+
+        if self.pcos_models:
+            names = list(self.pcos_models.keys())
+            norm = normalize_weights({n: self.pcos_models[n]["weight"] for n in names}, names)
+            for n, w in norm.items():
+                self.pcos_models[n]["weight"] = float(w)
+            logger.info(f"[Face] ✅ Normalized ensemble weights: {norm}")
+
+    # ---- preprocessing / IO
+
+    @staticmethod
+    def _input_hw(model: tf.keras.Model) -> Tuple[int, int]:
+        try:
+            shp = model.input_shape
+            if shp and len(shp) >= 4:
+                return int(shp[1]), int(shp[2])
+        except Exception:
+            pass
+        return settings.FACE_IMAGE_SIZE
+
+    @staticmethod
+    def _load_rgb(image_bytes: bytes, size_hw: Tuple[int, int]) -> np.ndarray:
+        H, W = size_hw
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img = img.resize((W, H), Image.Resampling.LANCZOS)
+        return np.asarray(img, dtype="float32")  # 0..255 float
+
+    # ---- inference
+
+    async def predict_gender(self, image_bytes: bytes) -> Dict[str, Any]:
+        if self.gender_model is None:
+            return {"male": 0.0, "female": 1.0, "label": "female", "confidence": 1.0}
+
+        arr = self._load_rgb(image_bytes, self._input_hw(self.gender_model)) / 255.0
+        x = np.expand_dims(arr, 0)
+
+        try:
+            y = _forward(self.gender_model, tf.convert_to_tensor(x)).numpy()
+        except Exception:
+            y = self.gender_model.predict(x, verbose=0)
+
+        probs = y[0] if y.ndim > 1 else y
+        f_i = self.gender_mapping.get("female", 0)
+        m_i = self.gender_mapping.get("male", 1)
+        female = float(probs[f_i]) if f_i < len(probs) else 0.5
+        male = float(probs[m_i]) if m_i < len(probs) else 0.5
+        if female >= male:
+            label, conf = "female", female
+        else:
+            label, conf = "male", male
+        return {"male": male, "female": female, "label": label, "confidence": conf}
+
+    async def process_face_image(self, file: UploadFile) -> Dict[str, Any]:
+        image_bytes = await validate_image(file, max_mb=settings.MAX_UPLOAD_MB)
+
+        # persist for UI
+        fid = str(uuid.uuid4())[:8]
+        safe = get_safe_filename(file.filename or "face.jpg")
+        out_name = f"face-{fid}-{os.path.splitext(safe)[0]}.jpg"
+        (UPLOADS_DIR / out_name).write_bytes(image_bytes)
+
+        result: Dict[str, Any] = {
+            "face_img": f"/static/uploads/{out_name}",
+            "gender": None,
+            "face_pred": None,
+            "face_risk": "unknown",
+            "score": 0.0,
+            "per_model": {},
+            "ensemble": None,
+        }
+
+        gender = await self.predict_gender(image_bytes)
+        result["gender"] = gender
+
+        if gender["label"] == "male" and float(gender.get("confidence", 0.0)) >= 0.75:
+            result["face_pred"] = "Male face detected - PCOS analysis not applicable"
+            result["face_risk"] = "not_applicable"
+            result["ensemble"] = {"method": "weighted_mean", "score": 0.0, "models_used": 0, "weights": {}}
+            return result
+
+        if not self.pcos_models:
+            result["face_pred"] = "No PCOS face models available"
+            result["ensemble"] = {"method": "weighted_mean", "score": 0.0, "models_used": 0, "weights": {}}
+            return result
+
+        per_model: Dict[str, float] = {}
+        total_w = 0.0
+        weighted_sum = 0.0
+        weights_out: Dict[str, float] = {}
+
+        for name, d in self.pcos_models.items():
+            try:
+                H, W = d["input_hw"]
+                arr = self._load_rgb(image_bytes, (H, W))  # 0..255
+                preproc = d["preproc"]
+                try:
+                    arr_pp = preproc(arr)
+                except Exception:
+                    arr_pp = arr / 255.0
+                x = np.expand_dims(arr_pp, 0)
+
+                y = d["model"].predict(x, verbose=0)
+                probs = y[0] if y.ndim > 1 else y
+                pos = int(d.get("pos_idx", 1))
+                if probs.ndim == 1 and len(probs) >= 2:
+                    pcos_prob = float(probs[pos])
+                else:
+                    pcos_prob = float(np.squeeze(probs).astype(np.float32))
+                per_model[name] = pcos_prob
+
+                w = float(d["weight"])
+                weighted_sum += pcos_prob * w
+                total_w += w
+                weights_out[name] = w
+            except Exception as e:
+                logger.error(f"[Face] PCOS model {name} failed: {e}")
+
+        result["per_model"] = per_model
+
+        if total_w > 0 and per_model:
+            score = float(weighted_sum / total_w)
+            result["score"] = score
+            result["face_risk"] = get_risk_level(score)
+            result["face_pred"] = (
+                "High PCOS risk detected"
+                if result["face_risk"] == "high"
+                else "Moderate PCOS indicators detected"
+                if result["face_risk"] == "moderate"
+                else "Low PCOS risk detected"
+            )
+            result["ensemble"] = {
+                "method": "weighted_mean",
+                "score": score,
+                "models_used": int(len(per_model)),
+                "weights": weights_out,
+            }
+        else:
+            result["face_pred"] = "Analysis unavailable - no models could score the image"
+            result["ensemble"] = {"method": "weighted_mean", "score": 0.0, "models_used": 0, "weights": {}}
+
+        return result

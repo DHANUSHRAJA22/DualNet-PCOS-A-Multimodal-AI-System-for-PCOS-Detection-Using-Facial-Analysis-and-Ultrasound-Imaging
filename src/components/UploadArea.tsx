@@ -1,277 +1,157 @@
-import React, { useCallback, useState } from 'react';
-import { Upload, Camera, Image as ImageIcon, X, FileText, Info } from 'lucide-react';
-import { Button } from './ui/button';
-import { Card } from './ui/card';
-import { CameraCapture } from './CameraCapture';
-import { fixImageOrientation, type ProcessedImage } from '@/lib/image';
-import { toast } from 'sonner';
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { UploadCloud, Camera, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { toast } from 'sonner'
+import type { ProcessedImage } from '@/lib/image'
 
-interface UploadAreaProps {
-  id: string;
-  label: string;
-  subtext: string;
-  tips: string;
-  onChange: (processedImage: ProcessedImage | null) => void;
-  disabled?: boolean;
-  acceptedTypes?: string[];
-  maxFileSize?: number;
+type Props = {
+  id: string
+  label: string
+  subtext?: string
+  tips?: string
+  onChange: (img: ProcessedImage | null) => void
+  value?: ProcessedImage | null
+  onOpenCamera?: () => void
+  accept?: string
+  maxMb?: number
 }
 
-export const UploadArea: React.FC<UploadAreaProps> = ({
+export function UploadArea({
   id,
   label,
   subtext,
   tips,
   onChange,
-  disabled = false,
-  acceptedTypes = ['image/jpeg', 'image/png', 'image/webp'],
-  maxFileSize = 10 * 1024 * 1024 // 10MB
-}) => {
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [processedImage, setProcessedImage] = useState<ProcessedImage | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [cameraOpen, setCameraOpen] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
+  value,
+  onOpenCamera,
+  accept = 'image/*',
+  maxMb = 5,
+}: Props) {
+  const [localPreview, setLocalPreview] = useState<string | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const inputRef = useRef<HTMLInputElement | null>(null)
 
-  const validateFile = (file: File): string | null => {
-    if (!acceptedTypes.includes(file.type)) {
-      return `File type not supported. Please upload: ${acceptedTypes.join(', ')}`;
+  useEffect(() => {
+    setLocalPreview(value?.previewUrl || null)
+  }, [value])
+
+  const revokeLocal = () => {
+    if (localPreview && (!value || value.previewUrl !== localPreview)) {
+      URL.revokeObjectURL(localPreview)
     }
-    if (file.size > maxFileSize) {
-      return `File too large. Maximum size: ${Math.round(maxFileSize / (1024 * 1024))}MB`;
-    }
-    return null;
-  };
+  }
 
-  const processFile = useCallback(async (file: File) => {
-    const validationError = validateFile(file);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
+  useEffect(() => {
+    return () => revokeLocal()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-    setIsProcessing(true);
-    setError(null);
-    
-    try {
-      const processed = await fixImageOrientation(file);
-      setProcessedImage(processed);
-      onChange(processed);
-      toast.success(`${label} uploaded successfully`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to process image';
-      setError(message);
-      toast.error(`Failed to process ${label.toLowerCase()}: ${message}`);
-    } finally {
-      setIsProcessing(false);
-    }
-  }, [onChange, acceptedTypes, maxFileSize, label]);
+  const handleFiles = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return
+      const file = files[0]
+      const sizeMb = file.size / 1024 / 1024
+      if (sizeMb > maxMb) {
+        toast.error(`Maximum size is ${maxMb}MB`)
+        return
+      }
+      const previewUrl = URL.createObjectURL(file)
+      setLocalPreview(previewUrl)
+      onChange({
+        file,
+        previewUrl,
+        size: file.size,
+        mime: file.type,
+      })
+    },
+    [maxMb, onChange],
+  )
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    if (!disabled) {
-      setIsDragOver(true);
-    }
-  }, [disabled]);
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(false)
+    handleFiles(e.dataTransfer.files)
+  }
 
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  }, []);
+  const onPick = () => inputRef.current?.click()
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    
-    if (disabled) return;
-
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      processFile(files[0]);
-    }
-  }, [disabled, processFile]);
-
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      processFile(files[0]);
-    }
-    // Reset input value to allow selecting the same file again
-    e.target.value = '';
-  }, [processFile]);
-
-  const handleCameraCapture = useCallback((file: File) => {
-    processFile(file);
-    setCameraOpen(false);
-  }, [processFile]);
-
-  const clearUpload = useCallback(() => {
-    setProcessedImage(null);
-    setError(null);
-    onChange(null);
-  }, [onChange]);
-
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+  const clear = () => {
+    revokeLocal()
+    setLocalPreview(null)
+    onChange(null)
+    if (inputRef.current) inputRef.current.value = ''
+  }
 
   return (
-    <div className="w-full max-w-2xl mx-auto">
-      {!processedImage ? (
-        <Card
-          className={`
-            relative border-2 border-dashed transition-all duration-200 cursor-pointer p-8
-            ${isDragOver && !disabled 
-              ? 'border-blue-400 bg-blue-50 dark:bg-blue-950/20' 
-              : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
-            }
-            ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
-            ${isProcessing ? 'pointer-events-none' : ''}
-          `}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          <div className="text-center">
-            <div className="flex flex-col items-center space-y-4">
-              <div className="p-4 bg-gradient-to-br from-purple-100 to-indigo-100 dark:from-purple-900 dark:to-indigo-900 rounded-full">
-                {isProcessing ? (
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600" />
-                ) : (
-                  <Upload className="w-8 h-8 text-purple-600 dark:text-purple-400" />
-                )}
-              </div>
-              
-              <div className="space-y-2">
-                <h3 className="text-lg font-semibold text-slate-800 dark:text-gray-100">
-                  {label}
-                </h3>
-                <p className="text-sm text-slate-600 dark:text-gray-400">
-                  {subtext}
-                </p>
-                <p className="text-xs text-slate-500 dark:text-gray-500">
-                  Supports: JPEG, PNG, WebP (max {Math.round(maxFileSize / (1024 * 1024))}MB)
-                </p>
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-3 w-full max-w-sm">
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  disabled={disabled || isProcessing}
-                  onClick={() => document.getElementById(`${id}-file-input`)?.click()}
-                >
-                  <ImageIcon className="w-4 h-4 mr-2" />
-                  {isProcessing ? 'Processing...' : 'Browse Files'}
-                </Button>
-                
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  disabled={disabled || isProcessing}
-                  onClick={() => setCameraOpen(true)}
-                >
-                  <Camera className="w-4 h-4 mr-2" />
-                  Camera
-                </Button>
-              </div>
-              
-              <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 max-w-md">
-                <div className="flex items-start gap-2">
-                  <Info className="h-4 w-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
-                  <p className="text-xs text-blue-800 dark:text-blue-200 leading-relaxed">
-                    <strong>Tip:</strong> {tips}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <input
-            id={`${id}-file-input`}
-            type="file"
-            accept={acceptedTypes.join(',')}
-            onChange={handleFileSelect}
-            className="hidden"
-            disabled={disabled || isProcessing}
-          />
-        </Card>
-      ) : (
-        <Card className="p-6 border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-800 dark:text-gray-100">
-                {label} - Ready
-              </h3>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearUpload}
-                disabled={disabled || isProcessing}
-                className="text-slate-600 hover:text-red-600 hover:bg-red-50"
-              >
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-
-            <div className="relative">
-              <img
-                src={processedImage.previewUrl}
-                alt="Uploaded preview"
-                className="w-full max-h-96 object-contain rounded-lg border-2 border-slate-200 dark:border-gray-700 shadow-lg"
-              />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex items-center space-x-3 p-3 bg-white/70 dark:bg-gray-800 rounded-lg border border-slate-200">
-                <FileText className="w-5 h-5 text-slate-600 dark:text-gray-400" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-800 dark:text-gray-100 truncate">
-                    {processedImage.file.name}
-                  </p>
-                  <p className="text-xs text-slate-600 dark:text-gray-400">
-                    {formatFileSize(processedImage.size)} • {processedImage.file.type}
-                  </p>
-                </div>
-              </div>
-              
-              <div className="flex items-center space-x-3 p-3 bg-white/70 dark:bg-gray-800 rounded-lg border border-slate-200">
-                <ImageIcon className="w-5 h-5 text-slate-600 dark:text-gray-400" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-800 dark:text-gray-100">
-                    {processedImage.width} × {processedImage.height}
-                  </p>
-                  <p className="text-xs text-slate-600 dark:text-gray-400">
-                    {processedImage.orientation}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {error && (
-        <div className="mt-4 p-4 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded-lg">
-          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+    <Card className="p-4 border-dashed border-2">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <div className="font-semibold text-slate-800">{label}</div>
+          {subtext && <div className="text-sm text-slate-500">{subtext}</div>}
         </div>
-      )}
-      
-      <CameraCapture
-        open={cameraOpen}
-        onOpenChange={setCameraOpen}
-        onCapture={handleCameraCapture}
+        <div className="flex gap-2">
+          {onOpenCamera && (
+            <Button variant="outline" size="sm" onClick={onOpenCamera}>
+              <Camera className="w-4 h-4 mr-1" />
+              Camera
+            </Button>
+          )}
+          {localPreview && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={clear}
+              title="Clear image"
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={onDrop}
+        className={[
+          'rounded-lg overflow-hidden bg-muted/40 border',
+          dragging ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200',
+          'grid place-items-center aspect-square',
+        ].join(' ')}
+      >
+        {localPreview ? (
+          <img
+            src={localPreview}
+            alt="Selected"
+            className="object-contain w-full h-full bg-white"
+            loading="lazy"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={onPick}
+            className="flex flex-col items-center justify-center text-slate-600 hover:text-slate-800 focus:outline-none p-6"
+          >
+            <UploadCloud className="w-10 h-10 mb-2 opacity-70" />
+            <div className="font-medium">Drop image here or click to browse</div>
+            {tips && <div className="text-xs mt-1 text-slate-500">{tips}</div>}
+          </button>
+        )}
+      </div>
+
+      <input
+        id={`${id}-input`}
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        className="hidden"
+        onChange={(e) => handleFiles(e.target.files)}
       />
-      
-      <CameraCapture
-        open={cameraOpen}
-        onOpenChange={setCameraOpen}
-        onCapture={handleCameraCapture}
-      />
-    </div>
-  );
-};
+    </Card>
+  )
+}
